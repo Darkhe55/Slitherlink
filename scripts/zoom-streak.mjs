@@ -1,9 +1,9 @@
-import { chromium } from 'playwright-core'
+﻿import { chromium } from 'playwright-core'
 
 const browser = await chromium.launch({
   headless: true,
   executablePath:
-    'C:\\Users\\MerchRev\\AppData\\Local\\ms-playwright\\chromium-1228\\chrome-win64\\chrome.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
 })
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
 page.on('pageerror', (e) => console.log('PAGEERROR', e.message))

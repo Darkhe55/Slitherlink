@@ -18,7 +18,7 @@ export interface LogicChange {
 }
 
 export interface LogicStep {
-  rule: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+  rule: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
   label: string
   changes: LogicChange[]
   maskCells: number[]
@@ -916,6 +916,152 @@ export function planLogicSolve(
     }
   }
 
+  // —— 规则9：对角3-3 + 1-2-1 组合 ——
+  const applyRule9 = () => {
+    // 9b：对角 3-3 → 两个格各自的外边（远离对方的两条边）全部落环
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        if (puzzle.cells[cellMaskIndex(w, cx, cy)] !== 3) continue
+        // 正斜对角：A=(cx,cy), B=(cx+1,cy+1)
+        if (cx + 1 < w && cy + 1 < h && puzzle.cells[cellMaskIndex(w, cx + 1, cy + 1)] === 3) {
+          const acc: LogicChange[] = []
+          const ea = cellEdges(w, cx, cy)
+          const eb = cellEdges(w, cx + 1, cy + 1)
+          // A 的外边 = top + left；B 的外边 = bottom + right
+          trySet('h', ea.top, ES.On, acc)
+          trySet('v', ea.left, ES.On, acc)
+          trySet('h', eb.bottom, ES.On, acc)
+          trySet('v', eb.right, ES.On, acc)
+          if (acc.length) flush(9, `规则9b：对角3-3 (${cx},${cy})-(${cx+1},${cy+1}) → 外边落环`, acc)
+        }
+        // 反斜对角：A=(cx+1,cy), B=(cx,cy+1)
+        if (cx >= 0 && cy + 1 < h && puzzle.cells[cellMaskIndex(w, cx, cy + 1)] === 3) {
+          const acc: LogicChange[] = []
+          const ea = cellEdges(w, cx + 1, cy)
+          const eb = cellEdges(w, cx, cy + 1)
+          // A 的外边 = top + right；B 的外边 = bottom + left
+          trySet('h', ea.top, ES.On, acc)
+          trySet('v', ea.right, ES.On, acc)
+          trySet('h', eb.bottom, ES.On, acc)
+          trySet('v', eb.left, ES.On, acc)
+          if (acc.length) flush(9, `规则9b：对角3-3 (${cx+1},${cy})-(${cx},${cy+1}) → 外边落环`, acc)
+        }
+      }
+    }
+
+    // 9c：1-2-1 直线（贴墙或不能向外侧延伸）
+    // 水平：A=1, B=2, C=1 排成一行
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx + 2 < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)]
+        const nB = puzzle.cells[cellMaskIndex(w, cx + 1, cy)]
+        const nC = puzzle.cells[cellMaskIndex(w, cx + 2, cy)]
+        if (nA !== 1 || nB !== 2 || nC !== 1) continue
+        // 贴墙：在顶边(cy=0) 或底边(cy=h-1)
+        if (cy !== 0 && cy !== h - 1) continue
+        const acc: LogicChange[] = []
+        const eB = cellEdges(w, cx + 1, cy)
+        const eA = cellEdges(w, cx, cy)
+        const eC = cellEdges(w, cx + 2, cy)
+        if (cy === 0) {
+          // 贴顶边：B 的上边落环，A/C 的外边和下边排除
+          trySet('h', eB.top, ES.On, acc)
+          trySet('v', eA.left, ES.Forbidden, acc)
+          trySet('h', eA.bottom, ES.Forbidden, acc)
+          trySet('v', eC.right, ES.Forbidden, acc)
+          trySet('h', eC.bottom, ES.Forbidden, acc)
+        } else {
+          // 贴底边：B 的下边落环，A/C 的外边和上边排除
+          trySet('h', eB.bottom, ES.On, acc)
+          trySet('v', eA.left, ES.Forbidden, acc)
+          trySet('h', eA.top, ES.Forbidden, acc)
+          trySet('v', eC.right, ES.Forbidden, acc)
+          trySet('h', eC.top, ES.Forbidden, acc)
+        }
+        if (acc.length) flush(9, `规则9c：1-2-1 贴墙 (${cx},${cy}) → 中2落环`, acc)
+      }
+    }
+    // 垂直：A=1, B=2, C=1 排成一列
+    for (let cy = 0; cy + 2 < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)]
+        const nB = puzzle.cells[cellMaskIndex(w, cx, cy + 1)]
+        const nC = puzzle.cells[cellMaskIndex(w, cx, cy + 2)]
+        if (nA !== 1 || nB !== 2 || nC !== 1) continue
+        if (cx !== 0 && cx !== w - 1) continue
+        const acc: LogicChange[] = []
+        const eB = cellEdges(w, cx, cy + 1)
+        const eA = cellEdges(w, cx, cy)
+        const eC = cellEdges(w, cx, cy + 2)
+        if (cx === 0) {
+          // 贴左边：B 的左边落环，A/C 的外边和右边排除
+          trySet('v', eB.left, ES.On, acc)
+          trySet('h', eA.top, ES.Forbidden, acc)
+          trySet('v', eA.right, ES.Forbidden, acc)
+          trySet('h', eC.bottom, ES.Forbidden, acc)
+          trySet('v', eC.right, ES.Forbidden, acc)
+        } else {
+          // 贴右边：B 的右边落环，A/C 的外边和左边排除
+          trySet('v', eB.right, ES.On, acc)
+          trySet('h', eA.top, ES.Forbidden, acc)
+          trySet('v', eA.left, ES.Forbidden, acc)
+          trySet('h', eC.bottom, ES.Forbidden, acc)
+          trySet('v', eC.left, ES.Forbidden, acc)
+        }
+        if (acc.length) flush(9, `规则9c：1-2-1 贴墙竖 (${cx},${cy}) → 中2落环`, acc)
+      }
+    }
+
+    // 9c-L：L 拐角，拐角格=2，两臂=1 → 1-2 共享边排除
+    // L 形：B=2 在拐角，A=1 在 B 上方，C=1 在 B 右方（或对称方向）
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        if (puzzle.cells[cellMaskIndex(w, cx, cy)] !== 2) continue
+        // 方向1：上方=1，右方=1
+        if (cy > 0 && cx + 1 < w
+          && puzzle.cells[cellMaskIndex(w, cx, cy - 1)] === 1
+          && puzzle.cells[cellMaskIndex(w, cx + 1, cy)] === 1) {
+          const acc: LogicChange[] = []
+          const eB = cellEdges(w, cx, cy)
+          // B-top（与 A 共享）和 B-right（与 C 共享）都排除
+          trySet('h', eB.top, ES.Forbidden, acc)
+          trySet('v', eB.right, ES.Forbidden, acc)
+          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
+        }
+        // 方向2：上方=1，左方=1
+        if (cy > 0 && cx > 0
+          && puzzle.cells[cellMaskIndex(w, cx, cy - 1)] === 1
+          && puzzle.cells[cellMaskIndex(w, cx - 1, cy)] === 1) {
+          const acc: LogicChange[] = []
+          const eB = cellEdges(w, cx, cy)
+          trySet('h', eB.top, ES.Forbidden, acc)
+          trySet('v', eB.left, ES.Forbidden, acc)
+          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
+        }
+        // 方向3：下方=1，右方=1
+        if (cy + 1 < h && cx + 1 < w
+          && puzzle.cells[cellMaskIndex(w, cx, cy + 1)] === 1
+          && puzzle.cells[cellMaskIndex(w, cx + 1, cy)] === 1) {
+          const acc: LogicChange[] = []
+          const eB = cellEdges(w, cx, cy)
+          trySet('h', eB.bottom, ES.Forbidden, acc)
+          trySet('v', eB.right, ES.Forbidden, acc)
+          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
+        }
+        // 方向4：下方=1，左方=1
+        if (cy + 1 < h && cx > 0
+          && puzzle.cells[cellMaskIndex(w, cx, cy + 1)] === 1
+          && puzzle.cells[cellMaskIndex(w, cx - 1, cy)] === 1) {
+          const acc: LogicChange[] = []
+          const eB = cellEdges(w, cx, cy)
+          trySet('h', eB.bottom, ES.Forbidden, acc)
+          trySet('v', eB.left, ES.Forbidden, acc)
+          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
+        }
+      }
+    }
+  }
+
   // —— 推到不动点（完整推理，与动画无关）——
   let saturated = true
   for (let guard = 0; guard < 400; guard++) {
@@ -929,6 +1075,7 @@ export function planLogicSolve(
     applyRule5()
     applyRule6()
     applyRule7()
+    applyRule9()
     if (steps.length === before) {
       saturated = true
       break
