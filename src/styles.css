@@ -1,0 +1,512 @@
+:root {
+  --bg: #f6f2ea;
+  --bg-panel: #fffdf8;
+  --ink: #1c1b18;
+  --ink-soft: #5c574e;
+  --line: #d9d2c3;
+  --line-strong: #b7ae9a;
+  --loop: #1f6f5c;
+  --loop-hot: #2f9b7f;
+  --x: #a65b4c;
+  --x-soft: #d4b4ab;
+  --num: #2a2722;
+  --num-done: #8a8478;
+  --error: #c23b2e;
+  --error-soft: #f0d7d3;
+  --ok: #2f7d4a;
+  --accent: #c45c26;
+  --shadow: 0 10px 30px rgba(40, 30, 10, 0.08);
+  --radius: 14px;
+  --font: "Avenir Next", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SF Mono", "Cascadia Code", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.7), transparent 40%),
+    radial-gradient(circle at bottom right, rgba(196, 92, 38, 0.08), transparent 35%),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+}
+
+body {
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 20px 48px;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+}
+
+.brand p {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.puzzle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.puzzle-item {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #fbf8f1;
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.puzzle-item:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.puzzle-item.active {
+  border-color: var(--loop);
+  background: #eef7f2;
+  box-shadow: inset 0 0 0 1px rgba(31, 111, 92, 0.2);
+}
+
+.puzzle-item .title {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.puzzle-item .meta {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+
+button.btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+button.btn:hover {
+  border-color: var(--loop);
+  color: var(--loop);
+}
+
+button.btn.primary {
+  background: var(--loop);
+  border-color: var(--loop);
+  color: #fff;
+}
+
+button.btn.primary:hover {
+  background: var(--loop-hot);
+  color: #fff;
+}
+
+button.btn.danger {
+  border-color: var(--x);
+  color: var(--x);
+}
+
+button.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.status {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f3efe6;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.status.ok {
+  background: #e5f3ea;
+  color: var(--ok);
+}
+
+.status.bad {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.status.solving {
+  background: #e7eef8;
+  color: #274b7a;
+}
+
+.legend {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.legend kbd {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 0 6px;
+  background: #fff;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.board-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 10px;
+  overflow: hidden;
+}
+
+.zoom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.zoom-label {
+  min-width: 48px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+#board {
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+#board:active {
+  cursor: grabbing;
+}
+
+.board-svg {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(72vh, 760px);
+  touch-action: none;
+  user-select: none;
+  display: block;
+  margin: 0 auto;
+}
+
+.board-svg .edge-hit {
+  fill: none;
+  stroke: transparent;
+  /* stroke-width 由 SVG 属性按格距等比设置 */
+  cursor: pointer;
+}
+
+.board-svg .edge-guide {
+  stroke: #cfc7b8;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.board-svg .edge-on {
+  stroke: var(--loop);
+  stroke-linecap: round;
+  fill: none;
+}
+
+.board-svg .edge-on.fx-string {
+  stroke: var(--loop-hot);
+  filter: drop-shadow(0 0 8px rgba(47, 155, 127, 0.75));
+}
+
+.board-svg .edge-off {
+  stroke: var(--x-soft);
+  stroke-linecap: round;
+  fill: none;
+}
+
+.board-svg .edge-off-group.fx-pop {
+  animation: fxPop 0.6s cubic-bezier(0.2, 0.9, 0.3, 1);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes fxPop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  35% {
+    transform: scale(1.35);
+    opacity: 1;
+  }
+  60% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.board-svg .edge-off-mark {
+  stroke: var(--x);
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.board-svg .fx-ripple {
+  fill: none;
+  stroke: var(--x);
+  stroke-width: 3;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+.board-svg .point {
+  fill: var(--ink);
+}
+
+.board-svg .num {
+  fill: var(--num);
+  font-family: var(--font);
+  font-size: 22px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+.board-svg .num.satisfied {
+  fill: var(--num-done);
+}
+
+.board-svg .num.error {
+  fill: var(--error);
+}
+
+.board-svg .cell-error {
+  fill: var(--error-soft);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* —— 染色显示（半透明花纹/纯色，不遮数字） —— */
+.board-svg .cell-tint-out {
+  /* 色1：点阵花纹（fill 由 SVG pattern 提供） */
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.board-svg .cell-tint-in {
+  /* 色2：斜线花纹 */
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.board-svg .cell-tint-ref {
+  /* 细化色号：纯色 */
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.board-svg .cell-tint-out,
+.board-svg .cell-tint-in,
+.board-svg .cell-tint-ref {
+  transition: opacity 0.2s ease, fill 0.2s ease;
+}
+
+.board-svg .point-error {
+  fill: var(--error);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.footer-note {
+  margin-top: 18px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* —— 自定义题板 —— */
+.custom-editor {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.custom-editor h2 {
+  margin: 0 0 10px;
+}
+
+.custom-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.custom-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.custom-row input {
+  width: 52px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font: inherit;
+  background: #fff;
+}
+
+.custom-hint {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin: 6px 0 8px;
+}
+
+.custom-grid {
+  display: grid;
+  gap: 3px;
+  justify-content: start;
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px;
+  background: #f3efe6;
+  border-radius: 10px;
+}
+
+.custom-cell {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  font: 600 15px/1 var(--font);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.custom-cell.empty {
+  background: #f7f3ea;
+  color: transparent;
+}
+
+.custom-cell.selected {
+  outline: 2px solid var(--loop);
+  outline-offset: -1px;
+  background: #e7f2ec;
+  z-index: 1;
+  position: relative;
+}
+
+.custom-cell:hover {
+  border-color: var(--loop);
+}
+
+.custom-grid:focus {
+  outline: 2px solid rgba(31, 111, 92, 0.35);
+  outline-offset: 2px;
+}
+
+.custom-msg {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  min-height: 1.2em;
+}
+
+.custom-msg.ok {
+  color: var(--ok);
+}
+
+.custom-msg.bad {
+  color: var(--error);
+}

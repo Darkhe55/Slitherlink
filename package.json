@@ -1,0 +1,19 @@
+{
+  "name": "shuhui-slitherlink",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.6"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}
