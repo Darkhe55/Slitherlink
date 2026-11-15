@@ -263,7 +263,7 @@ export function collapseColors(puzzle: Puzzle, state: GameState): CollapseResult
     }
 
     // —— 窄桥规则：色2 多分支间的 1 格宽瓶颈 ——
-    const bridge = applyNarrowBridge(w, h, mark, fixed, state)
+    const bridge = applyNarrowBridge(w, h, mark, state)
     if (bridge.conflict) conflict = true
     if (bridge.forced.length) {
       changed = true
@@ -432,17 +432,18 @@ function applyCavities(
 }
 
 /**
- * 窄桥规则：
- *   色2 最终必须单连通。若当前有 ≥2 个色2 连通分支，
- *   在「非色1」格（色2 + 未染色）组成的图中，
- *   某个未染色格是连接不同色2 分支的割点（移除它就断开），
- *   则该格必须染成色2。
+ * 窄桥规则（内外对称，标准割点判定）：
+ *   取图 G = 目标色格 ∪ 未染色格，邻接不跨 On 边。
+ *   若去掉某个未染色格后 G 裂成两个连通块（该格是 G 的割点），
+ *   则该格必须染成目标色——否则该色会被这一格切成两半。
+ *     - 色1（外部）：外部绕着内部，出现一格宽的咽喉就意味着内部被掏出了洞
+ *     - 色2（内部）：内部必须连通
+ *   每个颜色跑一遍 Tarjan 割点算法，O(V+E)；邻接表两次分析共用。
  */
 function applyNarrowBridge(
   w: number,
   h: number,
   mark: CellMark[],
-  fixed: boolean[],
   state: GameState,
 ): { forced: Array<{ i: number; to: Color }>; conflict: boolean } {
   const nCols = w + 2
@@ -456,66 +457,91 @@ function applyNarrowBridge(
     return m === COLOR_OUT || m === COLOR_IN ? m : COLOR_UNK
   }
 
-  const neigh = (i: number): number[] => {
-    const pcx = i % nCols
-    const pcy = Math.floor(i / nCols)
-    const out: number[] = []
-    for (const [nx, ny] of [
-      [pcx + 1, pcy],
-      [pcx - 1, pcy],
-      [pcx, pcy + 1],
-      [pcx, pcy - 1],
-    ] as const) {
-      if (nx < 0 || ny < 0 || nx >= nCols || ny >= nRows) continue
-      const e = sharedEdgeBetween(w, h, pcx, pcy, nx, ny)
-      if (e && edgeValue(state, e.axis, e.index) === ES.On) continue
-      out.push(padIndex(w, nx, ny))
+  // 邻接只取决于盘面（On 边隔断），与颜色无关，内外两次分析共用
+  const adj: number[][] = new Array(N)
+  for (let pcy = 0; pcy < nRows; pcy++) {
+    for (let pcx = 0; pcx < nCols; pcx++) {
+      const out: number[] = []
+      for (const [nx, ny] of [
+        [pcx + 1, pcy],
+        [pcx - 1, pcy],
+        [pcx, pcy + 1],
+        [pcx, pcy - 1],
+      ] as const) {
+        if (nx < 0 || ny < 0 || nx >= nCols || ny >= nRows) continue
+        const e = sharedEdgeBetween(w, h, pcx, pcy, nx, ny)
+        if (e && edgeValue(state, e.axis, e.index) === ES.On) continue
+        out.push(ny * nCols + nx)
+      }
+      adj[pcy * nCols + pcx] = out
     }
-    return out
   }
 
-  // 色2 格列表
-  const inCells: number[] = []
-  for (let i = 0; i < N; i++) if (colorOf(i) === COLOR_IN) inCells.push(i)
-  if (inCells.length < 2) return { forced, conflict }
-
-  // 在完整图中，从第一个色2 格 BFS，看能否 reach 所有色2 格
-  const passable = (i: number) => colorOf(i) !== COLOR_OUT
-  const bfsReach = (blockV: number): number => {
-    const seen = new Uint8Array(N)
-    const stack = [inCells[0]!]
-    seen[inCells[0]!] = 1
-    let reached = 1
-    while (stack.length) {
-      const cur = stack.pop()!
-      for (const nb of neigh(cur)) {
-        if (!passable(nb)) continue
-        if (nb === blockV) continue
-        if (seen[nb]) continue
-        seen[nb] = 1
-        if (colorOf(nb) === COLOR_IN) reached++
-        stack.push(nb)
+  const forColor = (target: Color) => {
+    const other = target === COLOR_IN ? COLOR_OUT : COLOR_IN
+    const inSet = new Uint8Array(N)
+    let total = 0
+    for (let i = 0; i < N; i++) {
+      if (colorOf(i) === target) {
+        inSet[i] = 1
+        total++
       }
     }
-    return reached
-  }
+    if (total < 2) return
 
-  // 完整图里已经连通，不需要窄桥规则
-  if (bfsReach(-1) === inCells.length) return { forced, conflict }
+    const disc = new Array<number>(N).fill(-1)
+    const low = new Array<number>(N).fill(-1)
+    /** DFS 子树里的目标色格数 */
+    const sub = new Array<number>(N).fill(0)
+    /** 已处理完的、"会因去掉父节点而独立"且含目标色格的子节点数 */
+    const sep = new Array<number>(N).fill(0)
+    const isBridge = new Uint8Array(N)
+    let compsWithTarget = 0
+    let timer = 0
 
-  // 对每个未染色格，测试它是不是割点
-  for (let v = 0; v < N; v++) {
-    if (colorOf(v) !== COLOR_UNK) continue
-    if (bfsReach(v) < inCells.length) {
-      // v 是连接色2 分支的必经之路 → 必须染成色2
-      if (fixed[v] && mark[v] !== COLOR_IN) {
-        conflict = true
-        continue
+    const dfs = (u: number, parent: number) => {
+      disc[u] = low[u] = timer++
+      sub[u] = inSet[u] ? 1 : 0
+      for (const v of adj[u]!) {
+        if (colorOf(v) === other) continue
+        if (v === parent) continue
+        if (disc[v] === -1) {
+          dfs(v, u)
+          sub[u] += sub[v]
+          if (low[v] < low[u]) low[u] = low[v]
+          if (low[v] >= disc[u] && sub[v] > 0) sep[u]++
+        } else if (disc[v] < low[u]) {
+          low[u] = disc[v]
+        }
       }
-      forced.push({ i: v, to: COLOR_IN })
+      // 去掉 u 后会各自独立、且含目标色格的部分有几块：
+      //   u 子树之外算一块，加上每个 low[v] >= disc[u] 的子树各算一块。
+      // 必须 ≥2 块都含目标色格才能推出 u 是该色：若某块全是未定格，
+      // 那一块完全可以变成对面色，u 取对面色同样成立（健全性要求）。
+      const parts = (total - sub[u] > 0 ? 1 : 0) + sep[u]
+      if (parts >= 2) isBridge[u] = 1
+    }
+
+    // 图可能不连通，逐个连通块跑
+    for (let i = 0; i < N; i++) {
+      if (colorOf(i) === other) continue
+      if (disc[i] !== -1) continue
+      dfs(i, -1)
+      // 目标色格散落在多个连通块 ⇒ 该色不可能连通
+      // （图里只有目标色和未定格，分隔只能来自对面的固定格或 On 边，都无法回退）
+      if (sub[i] > 0) compsWithTarget++
+    }
+    if (compsWithTarget >= 2) conflict = true
+
+    for (let b = 0; b < N; b++) {
+      if (!isBridge[b]) continue
+      if (colorOf(b) === target) continue
+      forced.push({ i: b, to: target })
     }
   }
 
+  forColor(COLOR_IN)
+  forColor(COLOR_OUT)
   return { forced, conflict }
 }
 

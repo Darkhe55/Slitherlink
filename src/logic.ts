@@ -18,7 +18,7 @@ export interface LogicChange {
 }
 
 export interface LogicStep {
-  rule: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+  rule: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
   label: string
   changes: LogicChange[]
   maskCells: number[]
@@ -934,17 +934,21 @@ export function planLogicSolve(
           trySet('v', eb.right, ES.On, acc)
           if (acc.length) flush(9, `规则9b：对角3-3 (${cx},${cy})-(${cx+1},${cy+1}) → 外边落环`, acc)
         }
-        // 反斜对角：A=(cx+1,cy), B=(cx,cy+1)
-        if (cx >= 0 && cy + 1 < h && puzzle.cells[cellMaskIndex(w, cx, cy + 1)] === 3) {
+        // 反斜对角：A=(cx,cy), B=(cx-1,cy+1)
+        // 共享顶点是 (cx,cy+1)：A 在该顶点的两条边是 bottom/left，B 的是 top/right，
+        // 因此各自的"外边"是 A.top/A.right 与 B.bottom/B.left。
+        // （3 只有一个叉边，且它必须落在共享顶点上，否则该顶点度数会是 3 或 4）
+        if (cx > 0 && cy + 1 < h && puzzle.cells[cellMaskIndex(w, cx - 1, cy + 1)] === 3) {
           const acc: LogicChange[] = []
-          const ea = cellEdges(w, cx + 1, cy)
-          const eb = cellEdges(w, cx, cy + 1)
-          // A 的外边 = top + right；B 的外边 = bottom + left
+          const ea = cellEdges(w, cx, cy)
+          const eb = cellEdges(w, cx - 1, cy + 1)
           trySet('h', ea.top, ES.On, acc)
           trySet('v', ea.right, ES.On, acc)
           trySet('h', eb.bottom, ES.On, acc)
           trySet('v', eb.left, ES.On, acc)
-          if (acc.length) flush(9, `规则9b：对角3-3 (${cx+1},${cy})-(${cx},${cy+1}) → 外边落环`, acc)
+          if (acc.length) {
+            flush(9, `规则9b：反斜对角3-3 (${cx},${cy})-(${cx - 1},${cy + 1}) → 外边落环`, acc)
+          }
         }
       }
     }
@@ -1012,53 +1016,132 @@ export function planLogicSolve(
       }
     }
 
-    // 9c-L：L 拐角，拐角格=2，两臂=1 → 1-2 共享边排除
-    // L 形：B=2 在拐角，A=1 在 B 上方，C=1 在 B 右方（或对称方向）
-    for (let cy = 0; cy < h; cy++) {
-      for (let cx = 0; cx < w; cx++) {
-        if (puzzle.cells[cellMaskIndex(w, cx, cy)] !== 2) continue
-        // 方向1：上方=1，右方=1
-        if (cy > 0 && cx + 1 < w
-          && puzzle.cells[cellMaskIndex(w, cx, cy - 1)] === 1
-          && puzzle.cells[cellMaskIndex(w, cx + 1, cy)] === 1) {
-          const acc: LogicChange[] = []
-          const eB = cellEdges(w, cx, cy)
-          // B-top（与 A 共享）和 B-right（与 C 共享）都排除
-          trySet('h', eB.top, ES.Forbidden, acc)
-          trySet('v', eB.right, ES.Forbidden, acc)
-          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
+    // 注意：曾经这里有一条"L 拐角 1-2-1 → 1-2 共享边排除"的规则，但它不成立：
+    // B=2、上方=1、右方=1 时，B.top/B.right 的四种组合（××、环环、环×、×环）
+    // 在真实解里都出现过，推不出任何必然结论，已删除。
+    // 需要"封闭"条件（贴墙）的 1-2-1 才有效，见上面的 9c。
+  }
+
+
+  // —— 规则11 预计算：每格/每顶点的四条边 ——
+  const cellSides: Array<{ n: CellNumber; sides: Side[] }> = []
+  for (let cy = 0; cy < h; cy++) {
+    for (let cx = 0; cx < w; cx++) {
+      const e = cellEdges(w, cx, cy)
+      cellSides.push({
+        n: puzzle.cells[cellMaskIndex(w, cx, cy)] as CellNumber,
+        sides: [
+          { axis: 'h', index: e.top },
+          { axis: 'h', index: e.bottom },
+          { axis: 'v', index: e.left },
+          { axis: 'v', index: e.right },
+        ],
+      })
+    }
+  }
+  const vertexSides: Side[][] = []
+  for (let py = 0; py <= h; py++) {
+    for (let px = 0; px <= w; px++) {
+      const t = vertexEdges(w, px, py)
+      vertexSides.push([
+        { axis: 'h', index: t.west },
+        { axis: 'h', index: t.east },
+        { axis: 'v', index: t.north },
+        { axis: 'v', index: t.south },
+      ])
+    }
+  }
+
+  /** 在 hArr/vArr 上传播格子+顶点约束到不动点；出现矛盾返回 true（数组就地修改） */
+  const propagate = (hArr: EdgeState[], vArr: EdgeState[]): boolean => {
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const c of cellSides) {
+        if (c.n === null || c.n === undefined) continue
+        let on = 0
+        let off = 0
+        const unk: Side[] = []
+        for (const s of c.sides) {
+          const v = s.axis === 'h' ? hArr[s.index] : vArr[s.index]
+          if (v === ES.On) on++
+          else if (v === ES.Forbidden) off++
+          else unk.push(s)
         }
-        // 方向2：上方=1，左方=1
-        if (cy > 0 && cx > 0
-          && puzzle.cells[cellMaskIndex(w, cx, cy - 1)] === 1
-          && puzzle.cells[cellMaskIndex(w, cx - 1, cy)] === 1) {
-          const acc: LogicChange[] = []
-          const eB = cellEdges(w, cx, cy)
-          trySet('h', eB.top, ES.Forbidden, acc)
-          trySet('v', eB.left, ES.Forbidden, acc)
-          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
+        if (on > c.n || on + unk.length < c.n) return true
+        if (!unk.length) continue
+        const to = on === c.n ? ES.Forbidden : off + c.n === 4 ? ES.On : null
+        if (to === null) continue
+        for (const s of unk) {
+          if (s.axis === 'h') hArr[s.index] = to
+          else vArr[s.index] = to
         }
-        // 方向3：下方=1，右方=1
-        if (cy + 1 < h && cx + 1 < w
-          && puzzle.cells[cellMaskIndex(w, cx, cy + 1)] === 1
-          && puzzle.cells[cellMaskIndex(w, cx + 1, cy)] === 1) {
-          const acc: LogicChange[] = []
-          const eB = cellEdges(w, cx, cy)
-          trySet('h', eB.bottom, ES.Forbidden, acc)
-          trySet('v', eB.right, ES.Forbidden, acc)
-          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
-        }
-        // 方向4：下方=1，左方=1
-        if (cy + 1 < h && cx > 0
-          && puzzle.cells[cellMaskIndex(w, cx, cy + 1)] === 1
-          && puzzle.cells[cellMaskIndex(w, cx - 1, cy)] === 1) {
-          const acc: LogicChange[] = []
-          const eB = cellEdges(w, cx, cy)
-          trySet('h', eB.bottom, ES.Forbidden, acc)
-          trySet('v', eB.left, ES.Forbidden, acc)
-          if (acc.length) flush(9, `规则9c-L：L拐角1-2-1 (${cx},${cy}) → 共享边排除`, acc)
-        }
+        changed = true
       }
+      for (const sides of vertexSides) {
+        let on = 0
+        let off = 0
+        const unk: Side[] = []
+        for (const s of sides) {
+          const v = s.axis === 'h' ? hArr[s.index] : vArr[s.index]
+          if (v === ES.On) on++
+          else if (v === ES.Forbidden) off++
+          else unk.push(s)
+        }
+        if (on > 2) return true
+        // 线头：只有 1 条环边且没有未定边可救 → 永远闭不成环
+        if (on === 1 && unk.length === 0) return true
+        if (!unk.length) continue
+        let to: EdgeState | null = null
+        if (on === 2) to = ES.Forbidden // 度数已满，其余排除
+        else if (on === 1 && unk.length === 1) to = ES.On // 还差一条才能闭合成 2 度
+        else if (on === 0 && unk.length === 1) to = ES.Forbidden // 只能取 0 度
+        if (to === null) continue
+        for (const s of unk) {
+          if (s.axis === 'h') hArr[s.index] = to
+          else vArr[s.index] = to
+        }
+        changed = true
+      }
+    }
+    return false
+  }
+
+  /**
+   * 规则11：线头检测（一步前瞻 + 传播）。
+   * 对每条未定边分别试"落环"/"打叉"，各跑一遍传播：若某种填法会推出矛盾
+   * （格子环边数超过数字或补不上；顶点度数为 1 且没有未定边可救 = 线头无法闭合），
+   * 则该填法错误，此边必定是另一种填法。
+   */
+  const applyRule11 = () => {
+    const probe = (axis: Axis, index: number) => {
+      if (edgeValue(work, axis, index) !== ES.Unknown) return
+      const tryFill = (to: EdgeState): boolean => {
+        const hArr = work.h.slice()
+        const vArr = work.v.slice()
+        if (axis === 'h') hArr[index] = to
+        else vArr[index] = to
+        return propagate(hArr, vArr)
+      }
+      const okOn = !tryFill(ES.On)
+      const okOff = okOn ? !tryFill(ES.Forbidden) : true
+      const acc: LogicChange[] = []
+      if (okOn && !okOff) trySet(axis, index, ES.On, acc)
+      else if (!okOn && okOff) trySet(axis, index, ES.Forbidden, acc)
+      if (acc.length) {
+        const banned = acc[0]!.to === ES.On ? ES.Forbidden : ES.On
+        flush(
+          11,
+          `规则11：填成${banned === ES.On ? '环' : '叉'}会形成无法闭合的线头 → 必为${acc[0]!.to === ES.On ? '环' : '叉'}`,
+          acc,
+        )
+      }
+    }
+    for (let cy = 0; cy <= h; cy++) {
+      for (let cx = 1; cx <= w; cx++) probe('h', hIndex(w, cx, cy))
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) probe('v', vIndex(w, vx, vy))
     }
   }
 
@@ -1077,8 +1160,12 @@ export function planLogicSolve(
     applyRule7()
     applyRule9()
     if (steps.length === before) {
-      saturated = true
-      break
+      // 常规规则推不动了，用线头检测做一步前瞻破局
+      applyRule11()
+      if (steps.length === before) {
+        saturated = true
+        break
+      }
     }
     if (guard === 399) saturated = false
   }

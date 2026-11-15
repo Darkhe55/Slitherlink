@@ -3,10 +3,149 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f6f2ea'/%3E%3Cpath d='M9 9h14v14H9z' fill='none' stroke='%231f6f5c' stroke-width='3'/%3E%3C/svg%3E"
+    />
     <title>数回 · Slitherlink</title>
+    <style>
+      /* 只在真的没加载起来时才插入，配色/字体/圆板与 src/styles.css 一致 */
+      .boot-error {
+        max-width: 560px;
+        margin: 48px auto;
+        padding: 18px 20px;
+        border: 1px solid #d4b4ab;
+        border-radius: 14px;
+        background: #f0d7d3;
+        box-shadow: 0 10px 30px rgba(40, 30, 10, 0.08);
+        color: #c23b2e;
+        font: 14px/1.6 "Avenir Next", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      .boot-error p {
+        margin: 0 0 12px;
+        color: #c23b2e;
+        font-size: 14px;
+        line-height: 1.6;
+        word-break: break-all;
+      }
+      .boot-error button {
+        appearance: none;
+        border: 1px solid #b7ae9a;
+        border-radius: 999px;
+        background: #fff;
+        color: #1c1b18;
+        font: inherit;
+        padding: 7px 14px;
+        cursor: pointer;
+      }
+      .boot-error button:hover {
+        border-color: #1f6f5c;
+        color: #1f6f5c;
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
+
+    <script>
+      // 兜底（正常加载时什么都不做，也不会有任何加载界面）：
+      // 1) 模块脚本没加载成功 → 自动做一次绕过缓存的刷新
+      // 2) 20 秒还没进入游戏 → 同样自动刷新一次
+      // 每个标签页最多自动刷新一次（sessionStorage 记账），不会死循环；
+      // 仍然失败才在 #app 里插入一条提示，并把原因 post 到开发服务器便于定位。
+      ;(function () {
+        var KEY = 'shuhui:auto-reload'
+        var autoLeft = 1
+        try {
+          if (Date.now() - (Number(sessionStorage.getItem(KEY)) || 0) < 60000) autoLeft = 0
+        } catch (e) {
+          autoLeft = 0 // sessionStorage 不可用时绝不自动刷新
+        }
+
+        function booted() {
+          var app = document.getElementById('app')
+          return !!app && app.getAttribute('data-booted') === '1'
+        }
+
+        function report(msg) {
+          try {
+            navigator.sendBeacon('/__boot-failure', String(msg))
+          } catch (e) {
+            /* ignore */
+          }
+        }
+
+        function hardReload() {
+          if (autoLeft <= 0) return false
+          autoLeft = 0
+          try {
+            sessionStorage.setItem(KEY, String(Date.now()))
+          } catch (e) {
+            return false
+          }
+          // 万一有别的工具在这个 origin 注册过 Service Worker，一并摘掉，
+          // 否则它会继续拦请求返回旧内容（同样只有强制刷新才绕得过）
+          try {
+            if (navigator.serviceWorker) {
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                regs.forEach(function (r) {
+                  r.unregister()
+                })
+              })
+            }
+          } catch (e) {
+            /* ignore */
+          }
+          var u = new URL(location.href)
+          u.searchParams.set('_r', String(Date.now()))
+          location.replace(u.toString())
+          return true
+        }
+
+        function showError(msg) {
+          report(msg)
+          var app = document.getElementById('app')
+          if (!app || app.querySelector('.boot-error')) return
+          var box = document.createElement('div')
+          box.className = 'boot-error'
+          var p = document.createElement('p')
+          p.textContent = msg
+          var btn = document.createElement('button')
+          btn.type = 'button'
+          btn.textContent = '重新加载'
+          btn.addEventListener('click', function () {
+            location.reload()
+          })
+          box.appendChild(p)
+          box.appendChild(btn)
+          app.appendChild(box)
+        }
+
+        // 脚本资源加载失败：404 / 端口被别的服务占用导致缓存串味 / 被拦截
+        window.addEventListener(
+          'error',
+          function (e) {
+            var t = e.target
+            if (booted()) return
+            if (t && t.tagName === 'SCRIPT') {
+              var msg = '脚本没有加载成功：' + (t.getAttribute('src') || t.src || '')
+              if (!hardReload()) showError(msg)
+            }
+          },
+          true,
+        )
+
+        setTimeout(function () {
+          if (booted()) return
+          var msg =
+            '页面 20 秒仍未进入游戏。请确认运行 npm start 的终端没有报错，然后点下方按钮重试。'
+          if (!hardReload()) showError(msg)
+        }, 20000)
+      })()
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -14,16 +14,24 @@ import {
   setEdge,
 } from './state'
 import { puzzles as builtinPuzzles, getPuzzle, getReferenceSolution } from './puzzles'
-import { loadSavedPuzzles, savePuzzleToLibrary } from './library'
+import { loadSavedPuzzles, removeSavedPuzzle, savePuzzleToLibrary } from './library'
 import { clientToViewBox, hitTest, metricsFor, renderBoard, validateNow } from './render'
 import { validate } from './validate'
 import { planLogicSolve, type PlaybackFrame } from './logic'
 import { displayMarks, type DisplayMark } from './coloring'
 import { isMuted, playForEdge, resumeAudio, setMuted } from './audio'
 import { solvePuzzle } from './solver'
-
-const SAVE_PREFIX = 'shuhui-save:'
-const LAST_PUZZLE_KEY = 'shuhui-last-puzzle'
+import {
+  clearProgress,
+  initStore,
+  readLastPuzzle,
+  readProgress,
+  storeInProject,
+  storeLocationLabel,
+  writeLastPuzzle,
+  writeProgress,
+  type ProgressEntry,
+} from './store'
 
 interface Session {
   puzzle: Puzzle
@@ -40,28 +48,24 @@ function $(sel: string): HTMLElement {
 
 function loadSave(puzzleId: string): GameState | null {
   try {
-    const raw = localStorage.getItem(SAVE_PREFIX + puzzleId)
-    if (!raw) return null
-    const data = JSON.parse(raw) as {
-      version: number
-      puzzleId: string
-      width: number
-      height: number
-      h: number[]
-      v: number[]
-    }
-    if (data.version !== 1) return null
-    return deserializeState(data)
+    const data = readProgress(puzzleId) as ProgressEntry | null
+    if (!data || data.version !== 1) return null
+    if (data.width === undefined || data.height === undefined) return null
+    return deserializeState({
+      version: data.version,
+      puzzleId: data.puzzleId,
+      width: data.width,
+      height: data.height,
+      h: data.h,
+      v: data.v,
+    })
   } catch {
     return null
   }
 }
 
 function saveState(session: Session): void {
-  localStorage.setItem(
-    SAVE_PREFIX + session.puzzle.id,
-    JSON.stringify(serializeState(session.state)),
-  )
+  writeProgress(serializeState(session.state))
 }
 
 function difficultyLabel(d: Puzzle['difficulty']): string {
@@ -128,7 +132,7 @@ app.innerHTML = `
         <div><kbd>右键</kbd> 直接标 × · <kbd>拖拽</kbd> 平移画布</div>
         <div><kbd>滚轮</kbd> 缩放 · <kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> 放大/缩小/复位</div>
         <div><kbd>Z</kbd> / <kbd>Shift+Z</kbd> 撤销 / 重做</div>
-        <div><kbd>C</kbd> 检查 · <kbd>Esc</kbd> 清空 · <kbd>L</kbd> 逻辑解题</div>
+        <div><kbd>C</kbd> 检查 · <kbd>Esc</kbd> 清空 · <kbd>L</kbd> 逻辑解题/停止回放 · <kbd>P</kbd> 暂停/继续</div>
         <div><kbd>R</kbd> 随机 · <kbd>M</kbd> 音效开关</div>
       </div>
     </aside>
@@ -148,6 +152,7 @@ app.innerHTML = `
 `
 
 let session: Session | null = null
+let pendingDeleteId: string | null = null
 
 /** 内置 + 本地保存的自定义题库 */
 let library: Puzzle[] = [...builtinPuzzles]
@@ -187,29 +192,81 @@ function setStatus(text: string, tone: 'ok' | 'bad' | 'solving' | '' = '') {
   el.className = 'status' + (tone ? ` ${tone}` : '')
 }
 
-function renderPuzzleList() {
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&':
+        return '&amp;'
+      case '<':
+        return '&lt;'
+      case '>':
+        return '&gt;'
+      case '"':
+        return '&quot;'
+      default:
+        return '&#39;'
+    }
+  })
+}
+
+function renderPuzzleList(): void {
   refreshLibrary()
   const list = $('#puzzle-list')
   list.innerHTML = sortedLibrary()
     .map((p) => {
       const active = session?.puzzle.id === p.id ? ' active' : ''
+      const isCustom = p.difficulty === 'custom'
+      const confirming = pendingDeleteId === p.id
+      const actions = isCustom
+        ? `<button class="puzzle-act" type="button" data-edit="${escapeHtml(p.id)}" title="编辑题面">编辑</button>` +
+          `<button class="puzzle-act danger${confirming ? ' confirm' : ''}" type="button" data-del="${escapeHtml(p.id)}" title="${confirming ? '再点一次确认删除' : '从题库删除'}">${confirming ? '确认' : '×'}</button>`
+        : ''
       return `
-        <button class="puzzle-item${active}" data-id="${p.id}" type="button">
-          <span class="title">${p.name}</span>
-          <span class="meta">${p.width}×${p.height} · ${difficultyLabel(p.difficulty)}</span>
-        </button>
+        <div class="puzzle-row">
+          <button class="puzzle-item${active}" data-id="${escapeHtml(p.id)}" type="button">
+            <span class="title">${escapeHtml(p.name)}</span>
+            <span class="meta">${p.width}×${p.height} · ${difficultyLabel(p.difficulty)}</span>
+          </button>
+          ${actions}
+        </div>
       `
     })
     .join('')
-
   list.querySelectorAll<HTMLButtonElement>('.puzzle-item').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = btn.dataset.id
-      const p = id ? findPuzzle(id) : undefined
+      const p = btn.dataset.id ? findPuzzle(btn.dataset.id) : undefined
       if (p) selectPuzzle(p)
     })
   })
+  list.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.edit
+      if (id) editPuzzle(id)
+    })
+  })
+  list.querySelectorAll<HTMLButtonElement>('[data-del]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.del
+      if (!id) return
+      if (pendingDeleteId === id) deletePuzzle(id)
+      else {
+        pendingDeleteId = id
+        renderPuzzleList()
+      }
+    })
+  })
 }
+
+
+// 删除二次确认：点击其它位置自动取消，避免误触
+document.addEventListener('click', (e) => {
+  if (!pendingDeleteId) return
+  const target = e.target as Element | null
+  if (target?.closest('[data-del]')) return
+  pendingDeleteId = null
+  renderPuzzleList()
+})
+
 
 function renderBoardOnly(colorGrid?: DisplayMark[] | null) {
   if (!session) return
@@ -267,11 +324,7 @@ function selectPuzzle(puzzle: Puzzle) {
     redo: [],
   }
   lockPads(session.state)
-  try {
-    localStorage.setItem(LAST_PUZZLE_KEY, puzzle.id)
-  } catch {
-    /* localStorage 不可用时静默 */
-  }
+  writeLastPuzzle(puzzle.id)
   refresh()
   setStatus(`已载入「${puzzle.name}」。点击格线画环。`)
 }
@@ -550,12 +603,64 @@ function setZoom(next: number, anchor?: { x: number; y: number }) {
 /** 一次完整弦振/涟漪的名义时长 */
 const LOGIC_ANIM_MS = 720
 let logicPlaying = false
+let logicPaused = false
 let logicToken = 0
+/** 回放进度：当前第几帧 / 共几帧（1 起） */
+let logicFrame = 0
+let logicTotal = 0
 
 function sleep(ms: number, token: number): Promise<boolean> {
   return new Promise((resolve) => {
     setTimeout(() => resolve(token === logicToken), ms)
   })
+}
+
+/** 可暂停的等待：暂停期间不计时，继续后接着等完剩余时间 */
+function sleepPausable(ms: number, token: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let left = ms
+    const step = () => {
+      if (token !== logicToken) return resolve(false)
+      if (logicPaused) {
+        setTimeout(step, 60)
+        return
+      }
+      left -= 60
+      if (left <= 0) return resolve(true)
+      setTimeout(step, 60)
+    }
+    setTimeout(step, 60)
+  })
+}
+
+/**
+ * 「逻辑解题」按钮 = 回放总开关：
+ * 空闲 → 从当前状态推理并开始回放（按钮变成"停止回放"，其余按钮屏蔽）；
+ * 回放中/已暂停 → 停止回放并恢复其余按钮。
+ */
+function updateLogicButton() {
+  const btn = document.getElementById('btn-logic') as HTMLButtonElement | null
+  if (!btn) return
+  if (logicPlaying) {
+    btn.textContent = '停止回放'
+    btn.classList.remove('primary')
+    btn.classList.add('danger')
+  } else {
+    btn.textContent = '逻辑解题'
+    btn.classList.add('primary')
+    btn.classList.remove('danger')
+  }
+}
+
+/** 暂停/继续回放（快捷键 P）；不在回放中时无效 */
+function toggleLogicPause() {
+  if (!logicPlaying) return
+  logicPaused = !logicPaused
+  if (logicPaused) {
+    setStatus(`回放已暂停 [${logicFrame}/${logicTotal}] · 按 P 或点“逻辑解题”外的操作继续`, 'solving')
+  } else {
+    setStatus(`回放继续 [${logicFrame}/${logicTotal}]…`, 'solving')
+  }
 }
 
 function edgeMidVB(axis: 'h' | 'v', index: number) {
@@ -677,7 +782,8 @@ function flashEdge(axis: 'h' | 'v', index: number, to: ES, streak = 1) {
 }
 
 function setButtonsDisabled(disabled: boolean) {
-  for (const id of ['btn-check', 'btn-undo', 'btn-redo', 'btn-hint', 'btn-logic', 'btn-solve', 'btn-clear'] as const) {
+  // btn-logic 不屏蔽：回放中它就是"停止回放"
+  for (const id of ['btn-check', 'btn-undo', 'btn-redo', 'btn-hint', 'btn-solve', 'btn-clear'] as const) {
     const el = document.getElementById(id) as HTMLButtonElement | null
     if (el) el.disabled = disabled
   }
@@ -695,6 +801,7 @@ async function playLogicPlan(
 ) {
   const frames = plan.frames
   if (!frames.length) return
+  logicTotal = frames.length
 
   for (let i = 0; i < frames.length; i++) {
     if (token !== logicToken) return
@@ -707,19 +814,20 @@ async function playLogicPlan(
     renderBoardOnly(currentColorGrid())
     flashEdge(change.axis, change.index, change.to, frame.streak)
 
+    logicFrame = i + 1
     const tone = change.to === ES.On ? '落环' : '排除'
     setStatus(
-      `回放 [${i + 1}/${frames.length}] 规则${frame.rule} ${tone}×${frame.streak} · ${frame.label}`,
+      `回放 [${logicFrame}/${logicTotal}] 规则${frame.rule} ${tone}×${frame.streak} · ${frame.label}`,
       'solving',
     )
 
     if (i < frames.length - 1) {
       const gap = Math.max(50, Math.round(LOGIC_ANIM_MS / frame.streak))
-      const more = await sleep(gap, token)
+      const more = await sleepPausable(gap, token)
       if (!more) return
     }
   }
-  await sleep(LOGIC_ANIM_MS, token)
+  await sleepPausable(LOGIC_ANIM_MS, token)
 }
 
 /**
@@ -738,9 +846,12 @@ async function runLogicSolver() {
   }
 
   logicPlaying = true
+  logicPaused = false
+  logicFrame = 0
   logicToken++
   const token = logicToken
   setButtonsDisabled(true)
+  updateLogicButton()
   setStatus('逻辑解题：推理中…', 'solving')
   // 让“推理中”先上屏
   await sleep(16, token)
@@ -752,7 +863,9 @@ async function runLogicSolver() {
 
   if (!plan.frames.length) {
     logicPlaying = false
+    logicPaused = false
     setButtonsDisabled(false)
+    updateLogicButton()
     setStatus('逻辑规则暂无新推演（可能已卡关或已全部确定）。')
     return
   }
@@ -775,7 +888,9 @@ async function runLogicSolver() {
 
   if (token === logicToken) {
     logicPlaying = false
+    logicPaused = false
     setButtonsDisabled(false)
+    updateLogicButton()
     if (session && session.puzzle.id === puzzle.id) {
       // 收尾仍显示染色
       renderBoardOnly(currentColorGrid())
@@ -789,7 +904,9 @@ async function runLogicSolver() {
 function stopLogic() {
   logicToken++
   logicPlaying = false
+  logicPaused = false
   setButtonsDisabled(false)
+  updateLogicButton()
 }
 
 function pickRandomPuzzle() {
@@ -810,12 +927,48 @@ function toggleMute() {
   if (!next) resumeAudio()
 }
 
+function editPuzzle(id: string): void {
+  const puzzle = findPuzzle(id)
+  if (!puzzle || puzzle.difficulty !== 'custom') return
+  editCustomPuzzle(puzzle)
+}
+
+function deletePuzzle(id: string): void {
+  const puzzle = findPuzzle(id)
+  if (!puzzle || puzzle.difficulty !== 'custom') return
+  pendingDeleteId = null
+  const wasCurrent = session?.puzzle.id === id
+  if (editingId === id) {
+    editingId = null
+    editingName = null
+  }
+  removeSavedPuzzle(id)
+  clearProgress(id)
+  refreshLibrary()
+  if (wasCurrent) {
+    const next = sortedLibrary()[0]
+    if (next) {
+      selectPuzzle(next)
+    } else {
+      session = null
+      $('#board').innerHTML = ''
+      renderPuzzleList()
+    }
+  } else {
+    renderPuzzleList()
+  }
+  setStatus(`已删除「${puzzle.name}」。`, 'ok')
+}
+
 // —— 自定义题板 ——
 let customCells: CellNumber[] = []
 let customW = 5
 let customH = 5
 /** 键盘光标所在格（0..W*H-1），-1 表示未选 */
 let customCursor = 0
+/** 正在编辑的题库条目 id / 名称（null = 新建） */
+let editingId: string | null = null
+let editingName: string | null = null
 
 function customMsg(text: string, tone: 'ok' | 'bad' | '' = '') {
   const el = document.getElementById('custom-msg')
@@ -900,7 +1053,8 @@ function openCustomEditor() {
   if (hEl) hEl.value = String(customH)
   if (customCursor >= customW * customH) customCursor = 0
   renderCustomGrid()
-  customMsg('键盘：方向键移动 · 0–3 填数 · . / 退格清空 · Enter 下一格')
+  const editing = editingId ? `正在编辑「${editingName ?? editingId}」。` : ''
+  customMsg(`${editing}键盘：方向键移动 · 0–3 填数 · . / 退格清空 · Enter 下一格`)
   // 焦点进网格，便于直接打字
   const grid = document.getElementById('custom-grid')
   grid?.focus()
@@ -927,6 +1081,8 @@ function regenCustomGrid() {
   customH = h
   customCells = new Array<CellNumber>(w * h).fill(null)
   customCursor = 0
+  editingId = null
+  editingName = null
   renderCustomGrid()
   customMsg(`已生成 ${w}×${h} 网格。方向键移动，0–3 填数。`)
   document.getElementById('custom-grid')?.focus()
@@ -954,10 +1110,22 @@ function loadCustomPuzzle() {
     return
   }
   const puzzle = makeCustomPuzzle()
+  // 载入即入库：用「宽x高」做稳定 id，重复载入同尺寸只覆盖同一条，
+  // 否则刷新/切走后再也找不到这块题板（进度是按题 id 存的，id 稳定才能接上）。
+  // 编辑已有题目时沿用原 id，保存即覆盖原题。
+  const stableId = editingId ?? `custom-${w}x${h}`
+  const kept = {
+    ...puzzle,
+    id: stableId,
+    name: editingName ?? `自定义 · ${w}×${h}`,
+  }
+  savePuzzleToLibrary(kept)
+  editingId = kept.id
+  editingName = kept.name
   stopLogic()
   session = {
-    puzzle,
-    state: createEmptyState(puzzle),
+    puzzle: kept,
+    state: createEmptyState(kept),
     undo: [],
     redo: [],
   }
@@ -966,8 +1134,8 @@ function loadCustomPuzzle() {
   panX = 0
   panY = 0
   refresh()
-  setStatus(`已载入自定义 ${w}×${h}。`)
-  customMsg('题板已载入，可点「求解」或「逻辑解题」。', 'ok')
+  setStatus(`已载入自定义 ${w}×${h}，并存入题库（刷新后仍在列表里）。`)
+  customMsg('题板已载入并存入题库，可点「求解」或「逻辑解题」。', 'ok')
 }
 
 function saveCustomToLibrary() {
@@ -976,11 +1144,13 @@ function saveCustomToLibrary() {
     customMsg('请先生成网格并填好数字。', 'bad')
     return
   }
+  const isEditing = !!editingId
   const stamp = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
-  const name = `自定义 · ${w}×${h} · ${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}${pad(stamp.getHours())}${pad(stamp.getMinutes())}`
+  const fallback = `自定义 · ${w}×${h} · ${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}${pad(stamp.getHours())}${pad(stamp.getMinutes())}`
+  const name = editingName ?? fallback
   const puzzle: Puzzle = {
-    id: `custom-${w}x${h}-${Date.now()}`,
+    id: editingId ?? `custom-${w}x${h}-${Date.now()}`,
     name,
     width: w,
     height: h,
@@ -988,10 +1158,33 @@ function saveCustomToLibrary() {
     difficulty: 'custom',
   }
   savePuzzleToLibrary(puzzle)
+  editingId = puzzle.id
+  editingName = puzzle.name
   refreshLibrary()
   renderPuzzleList()
-  customMsg(`已保存到题库：「${name}」，下次启动仍可选用。`, 'ok')
+  customMsg(`已${isEditing ? '更新' : '保存'}到题库：「${name}」，下次启动仍可选用。`, 'ok')
   setStatus(`自定义盘已存入题库「${name}」。`)
+}
+
+/** 把已保存的自定义题读回编辑器（保存会覆盖原题） */
+function editCustomPuzzle(puzzle: Puzzle) {
+  const cells = (puzzle as Puzzle & { cells?: CellNumber[] }).cells
+  if (!Array.isArray(cells) || cells.length !== puzzle.width * puzzle.height) return
+  customW = puzzle.width
+  customH = puzzle.height
+  customCells = cells.slice()
+  customCursor = 0
+  editingId = puzzle.id
+  editingName = puzzle.name
+  const wEl = $('#custom-w') as HTMLInputElement
+  const hEl = $('#custom-h') as HTMLInputElement
+  if (wEl) wEl.value = String(customW)
+  if (hEl) hEl.value = String(customH)
+  $('#custom-editor').hidden = false
+  renderCustomGrid()
+  customMsg(`正在编辑「${puzzle.name}」。保存会覆盖原题。`, 'ok')
+  document.getElementById('custom-editor')?.scrollIntoView({ block: 'nearest' })
+  document.getElementById('custom-grid')?.focus()
 }
 
 function solveCustom() {
@@ -1048,7 +1241,8 @@ $('#custom-logic').addEventListener('click', logicCustom)
 $('#custom-close').addEventListener('click', closeCustomEditor)
 $('#btn-logic').addEventListener('click', () => {
   resumeAudio()
-  void runLogicSolver()
+  if (logicPlaying) stopLogic()
+  else void runLogicSolver()
 })
 $('#zoom-in').addEventListener('click', () => setZoom(zoom * 1.25))
 $('#zoom-out').addEventListener('click', () => setZoom(zoom / 1.25))
@@ -1061,6 +1255,13 @@ $('#zoom-reset').addEventListener('click', () => {
 
 window.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return
+  // 待确认删除时，Esc 先取消确认
+  if (e.key === 'Escape' && pendingDeleteId) {
+    e.preventDefault()
+    pendingDeleteId = null
+    renderPuzzleList()
+    return
+  }
 
   // —— 自定义题板键盘录入（编辑器打开时优先）——
   if (customEditorOpen()) {
@@ -1137,7 +1338,11 @@ window.addEventListener('keydown', (e) => {
     check()
   } else if (k === 'l') {
     e.preventDefault()
-    void runLogicSolver()
+    if (logicPlaying) stopLogic()
+    else void runLogicSolver()
+  } else if (k === 'p') {
+    e.preventDefault()
+    toggleLogicPause()
   } else if (k === 'r') {
     e.preventDefault()
     pickRandomPuzzle()
@@ -1162,18 +1367,40 @@ window.addEventListener('keydown', (e) => {
   }
 })
 
-// 默认载入：优先恢复上次玩的题；找不到再回退到排序第一题
-refreshLibrary()
-let boot: Puzzle | undefined
+// 默认载入：先等存储就绪（项目内 data/ 优先，读不到才降级 localStorage），
+// 再恢复上次玩的题；找不到就回退到排序第一题
+void (async () => {
+  try {
+    await initStore()
+    refreshLibrary()
+    let boot: Puzzle | undefined
+    const lastId = readLastPuzzle()
+    if (lastId) boot = findPuzzle(lastId)
+    if (!boot) boot = sortedLibrary()[0]
+    if (boot) selectPuzzle(boot)
+    else setStatus('没有可用题面。', 'bad')
+    if (storeInProject()) {
+      // 存储位置在状态栏提示一次，避免用户不知道题库存到哪了
+      const el = $('#status')
+      el.textContent += `（题库/进度：${storeLocationLabel()}）`
+    }
+  } catch (err) {
+    // 启动阶段任何异常都在状态栏可见，避免留下半初始化却看似"打不开"的界面
+    setStatus(`初始化失败：${err instanceof Error ? err.message : String(err)}`, 'bad')
+  }
+})()
+
+// 告知 index.html 的兜底脚本：应用已就绪；同时清掉自动刷新用的 _r 参数
+app.setAttribute('data-booted', '1')
 try {
-  const lastId = localStorage.getItem(LAST_PUZZLE_KEY)
-  if (lastId) boot = findPuzzle(lastId)
+  const url = new URL(location.href)
+  if (url.searchParams.has('_r')) {
+    url.searchParams.delete('_r')
+    history.replaceState(null, '', url.pathname + url.search + url.hash)
+  }
 } catch {
-  boot = undefined
+  /* URL 不可用时忽略 */
 }
-if (!boot) boot = sortedLibrary()[0]
-if (boot) selectPuzzle(boot)
-else setStatus('没有可用题面。', 'bad')
 
 // 便于调试
 ;(window as unknown as { __shuhui: unknown }).__shuhui = {
