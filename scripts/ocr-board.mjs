@@ -12,6 +12,7 @@ import { edgePath, profileDir } from './_browser.mjs'
 
 const args = process.argv.slice(2)
 const imgArg = args.find((a) => !a.startsWith('--'))
+const jsonArg = args.includes('--json')
 const mapIdx = args.findIndex((a) => a === '--map' || a.startsWith('--map='))
 const mapArg = mapIdx >= 0 ? (args[mapIdx].startsWith('--map=') ? args[mapIdx] : `--map=${args[mapIdx + 1] || ''}`) : null
 const SRC = path.resolve(imgArg || 'output/board-src.png')
@@ -132,6 +133,13 @@ const r = await page.evaluate(async (u) => {
 }, url)
 
 await ctx.close()
+
+const outDir = path.resolve('output/cells')
+fs.mkdirSync(outDir, { recursive: true })
+if (jsonArg) {
+  fs.writeFileSync(path.join(outDir, 'ocr.json'), JSON.stringify(r))
+  console.log('已写入 output/cells/ocr.json')
+}
 
 console.log(`图片 ${path.basename(SRC)} → 网格 ${r.nCols} 列 x ${r.nRows} 行 = ${r.nCols * r.nRows} 格`)
 console.log(`字形簇 ${r.protos.length} 个（数量 ${r.protos.map((p) => p.count).join(',')}）`)

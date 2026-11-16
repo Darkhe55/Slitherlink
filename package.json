@@ -7,7 +7,9 @@
     "dev": "vite",
     "start": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "import-image": "node scripts/import-image.mjs",
+    "ocr-board": "node scripts/ocr-board.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.64.1",

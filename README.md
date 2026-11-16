@@ -82,4 +82,21 @@ npm run dev       # 开发服务（127.0.0.1:5177）
 npm start         # 开发服务 + 就绪后自动打开浏览器
 npm run build     # tsc --noEmit + vite build
 npm run preview   # 预览构建结果
+npm run import-image -- 题板.png   # 识图导入（预览）
+npm run ocr-board -- 题板.png      # 仅 OCR，输出簇原型供排查
 ```
+
+## 识图导入
+
+```bash
+# 预览：自动识别点阵、数字 0–3，并打印数字网格
+npm run import-image -- 题板.png
+
+# 写入题库；--verify 会启动本地 solver 校验唯一解（大图可能超时，默认跳过）
+npm run import-image -- 题板.png --name "识图 · 25×30" --append --verify
+```
+
+- 数字识别优先用内置无衬线字体模板匹配，字体差异大时用字形结构兜底；
+- 如果自动映射不对，可人工指定字形簇：`--map 0=3,1=2,4=1`；
+- `--series` 可指定题库系列，默认 `human`；
+- `--verify` 成功确认唯一解时会把 `solH/solV` 一起写入题库，超时或非唯一则不写参考解。
