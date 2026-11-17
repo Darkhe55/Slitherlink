@@ -355,6 +355,16 @@ function collapseColors(puzzle, state) {
         fixed[f.i] = true;
       }
     }
+    const bridge = applyNarrowBridge(w, h, mark, state);
+    if (bridge.conflict) conflict = true;
+    if (bridge.forced.length) {
+      changed = true;
+      for (const f of bridge.forced) {
+        forced.push(f);
+        mark[f.i] = f.to;
+        fixed[f.i] = true;
+      }
+    }
     if (!changed || conflict) break;
   }
   return { mark, fixed, conflict, forced };
@@ -471,6 +481,87 @@ function applyCavities(w, h, mark, fixed, state) {
       }
     }
   }
+  return { forced, conflict };
+}
+function applyNarrowBridge(w, h, mark, state) {
+  const nCols = w + 2;
+  const nRows = h + 2;
+  const N = nCols * nRows;
+  const forced = [];
+  let conflict = false;
+  const colorOf = (i) => {
+    const m = mark[i];
+    return m === COLOR_OUT || m === COLOR_IN ? m : COLOR_UNK;
+  };
+  const adj = new Array(N);
+  for (let pcy = 0; pcy < nRows; pcy++) {
+    for (let pcx = 0; pcx < nCols; pcx++) {
+      const out = [];
+      for (const [nx, ny] of [
+        [pcx + 1, pcy],
+        [pcx - 1, pcy],
+        [pcx, pcy + 1],
+        [pcx, pcy - 1]
+      ]) {
+        if (nx < 0 || ny < 0 || nx >= nCols || ny >= nRows) continue;
+        const e = sharedEdgeBetween(w, h, pcx, pcy, nx, ny);
+        if (e && edgeValue(state, e.axis, e.index) === 1 /* On */) continue;
+        out.push(ny * nCols + nx);
+      }
+      adj[pcy * nCols + pcx] = out;
+    }
+  }
+  const forColor = (target) => {
+    const other = target === COLOR_IN ? COLOR_OUT : COLOR_IN;
+    const inSet = new Uint8Array(N);
+    let total = 0;
+    for (let i = 0; i < N; i++) {
+      if (colorOf(i) === target) {
+        inSet[i] = 1;
+        total++;
+      }
+    }
+    if (total < 2) return;
+    const disc = new Array(N).fill(-1);
+    const low = new Array(N).fill(-1);
+    const sub = new Array(N).fill(0);
+    const sep = new Array(N).fill(0);
+    const isBridge = new Uint8Array(N);
+    let compsWithTarget = 0;
+    let timer = 0;
+    const dfs = (u, parent) => {
+      disc[u] = low[u] = timer++;
+      sub[u] = inSet[u] ? 1 : 0;
+      for (const v of adj[u]) {
+        if (colorOf(v) === other) continue;
+        if (v === parent) continue;
+        if (disc[v] === -1) {
+          dfs(v, u);
+          sub[u] += sub[v];
+          if (low[v] < low[u]) low[u] = low[v];
+          if (low[v] >= disc[u] && sub[v] > 0) sep[u]++;
+        } else if (disc[v] < low[u]) {
+          low[u] = disc[v];
+        }
+      }
+      const parts = (total - sub[u] > 0 ? 1 : 0) + sep[u];
+      if (parts >= 2) isBridge[u] = 1;
+    };
+    for (let i = 0; i < N; i++) {
+      if (colorOf(i) === other) continue;
+      if (disc[i] !== -1) continue;
+      dfs(i, -1);
+      if (sub[i] > 0) compsWithTarget++;
+    }
+    if (compsWithTarget >= 2) conflict = true;
+    for (let b = 0; b < N; b++) {
+      if (!isBridge[b]) continue;
+      if (colorOf(b) === target) continue;
+      forced.push({ i: b, to: target });
+    }
+  };
+  forColor(COLOR_IN);
+  forColor(COLOR_OUT);
   return { forced, conflict };
 }
 function probeEdge(puzzle, state, axis, index, to) {
@@ -716,13 +807,13 @@ function planLogicSolve(puzzle, state) {
               const hasOn = v1 === 1 /* On */ || v2 === 1 /* On */;
               if (hasOff && hasOn) {
                 const acc = [];
-                const cellSides = [
+                const cellSides2 = [
                   { axis: "h", index: e.top },
                   { axis: "h", index: e.bottom },
                   { axis: "v", index: e.left },
                   { axis: "v", index: e.right }
                 ];
-                for (const s of cellSides) {
+                for (const s of cellSides2) {
                   if (!onCellKeys.has(`${s.axis}:${s.index}`)) {
                     trySet(s.axis, s.index, 2 /* Forbidden */, acc);
                   }
@@ -856,41 +947,47 @@ function planLogicSolve(puzzle, state) {
             ]
           },
           {
+            // 3 在 2 左下方：公共顶点 Vc = 2 的左下角 (x2, y2+1)；
+            // 2 的对角顶点 = 右上角 (x2+1, y2)
             x3: x2 - 1,
             y3: y2 + 1,
-            farPx: [x2, y2 + 1],
-            threeFar: (e) => [
-              { axis: "h", index: e.bottom },
-              { axis: "v", index: e.left }
-            ],
-            twoAtFar: (e) => [
-              { axis: "h", index: e.bottom },
-              { axis: "v", index: e.right }
-            ]
-          },
-          {
-            x3: x2 + 1,
-            y3: y2 - 1,
             farPx: [x2 + 1, y2],
             threeFar: (e) => [
+              { axis: "h", index: e.bottom },
+              { axis: "v", index: e.left }
+            ],
+            twoAtFar: (e) => [
+              { axis: "h", index: e.top },
+              { axis: "v", index: e.right }
+            ]
+          },
+          {
+            // 3 在 2 右上方：公共顶点 Vc = 2 的右上角 (x2+1, y2)；
+            // 2 的对角顶点 = 左下角 (x2, y2+1)
+            x3: x2 + 1,
+            y3: y2 - 1,
+            farPx: [x2, y2 + 1],
+            threeFar: (e) => [
               { axis: "h", index: e.top },
               { axis: "v", index: e.right }
             ],
             twoAtFar: (e) => [
-              { axis: "h", index: e.top },
+              { axis: "h", index: e.bottom },
               { axis: "v", index: e.left }
             ]
           },
           {
+            // 3 在 2 左上方：公共顶点 Vc = 2 的左上角 (x2, y2)；
+            // 2 的对角顶点 = 右下角 (x2+1, y2+1)
             x3: x2 - 1,
             y3: y2 - 1,
-            farPx: [x2, y2],
+            farPx: [x2 + 1, y2 + 1],
             threeFar: (e) => [
               { axis: "h", index: e.top },
               { axis: "v", index: e.left }
             ],
             twoAtFar: (e) => [
-              { axis: "h", index: e.top },
+              { axis: "h", index: e.bottom },
               { axis: "v", index: e.right }
             ]
           }
@@ -1017,13 +1114,13 @@ function planLogicSolve(puzzle, state) {
               if (edgeValue(work, s.axis, s.index) === 1 /* On */) continue;
               trySet(s.axis, s.index, 2 /* Forbidden */, acc);
             }
-            const cellSides = [
+            const cellSides2 = [
               { axis: "h", index: e.top },
               { axis: "h", index: e.bottom },
               { axis: "v", index: e.left },
               { axis: "v", index: e.right }
             ];
-            for (const s of cellSides) {
+            for (const s of cellSides2) {
               if (!atVertex.has(`${s.axis}:${s.index}`)) {
                 trySet(s.axis, s.index, 1 /* On */, acc);
               }
@@ -1170,7 +1267,6 @@ function planLogicSolve(puzzle, state) {
       for (const v of g.vertices) {
         trySet(v.outward.axis, v.outward.index, 2 /* Forbidden */, acc);
       }
-      trySet(g.shared.axis, g.shared.index, 1 /* On */, acc);
       if (dir === "H") {
         trySet("v", g.a.left, 1 /* On */, acc);
         trySet("v", g.b.right, 1 /* On */, acc);
@@ -1179,7 +1275,7 @@ function planLogicSolve(puzzle, state) {
         trySet("h", g.b.bottom, 1 /* On */, acc);
       }
       if (acc.length) {
-        flush(7, `\u89C4\u52197\uFF1A\u53CC3 \u5916\u5411\xD7 + \u5171\u4EAB\u8FB9\u4E0E\u5BF9\u8FB9\u843D\u73AF`, acc);
+        flush(7, `\u89C4\u52197\uFF1A\u53CC3 \u5916\u5411\xD7 + \u5404\u81EA\u5916\u4FA7\u5BF9\u8FB9\u843D\u73AF\uFF08\u5171\u4EAB\u8FB9\u4E0D\u5B9A\uFF09`, acc);
       }
     };
     for (let cy = 0; cy < h; cy++) {
@@ -1200,6 +1296,363 @@ function planLogicSolve(puzzle, state) {
           }
         }
       }
+    }
+  };
+  const applyRule12 = () => {
+    const vCount = (w + 1) * (h + 1);
+    const parent = new Int32Array(vCount);
+    for (let i = 0; i < vCount; i++) parent[i] = i;
+    const find = (x) => {
+      let r = x;
+      while (parent[r] !== r) r = parent[r];
+      while (parent[x] !== r) {
+        const nx = parent[x];
+        parent[x] = r;
+        x = nx;
+      }
+      return r;
+    };
+    const onEdges = [];
+    const real = [];
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) real.push({ axis: "h", index: hIndex(w, hx, hy) });
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) real.push({ axis: "v", index: vIndex(w, vx, vy) });
+    }
+    for (const s of real) {
+      if (edgeValue(work, s.axis, s.index) === 1 /* On */) onEdges.push(s);
+    }
+    if (!onEdges.length) return;
+    let cycleEdge = null;
+    const usedVertex = /* @__PURE__ */ new Set();
+    for (const s of onEdges) {
+      let a;
+      let b;
+      if (s.axis === "h") {
+        const hy = Math.floor(s.index / hWidth(w));
+        const hx = s.index % hWidth(w);
+        a = hy * (w + 1) + (hx - 1);
+        b = hy * (w + 1) + hx;
+      } else {
+        const vy = Math.floor(s.index / (w + 1));
+        const vx = s.index % (w + 1);
+        a = (vy - 1) * (w + 1) + vx;
+        b = vy * (w + 1) + vx;
+      }
+      usedVertex.add(a);
+      usedVertex.add(b);
+      const ra = find(a);
+      const rb = find(b);
+      if (ra === rb) cycleEdge = s;
+      else parent[ra] = rb;
+    }
+    if (!cycleEdge) return;
+    const deg = /* @__PURE__ */ new Map();
+    for (const s of onEdges) {
+      let a;
+      let b;
+      if (s.axis === "h") {
+        const hy = Math.floor(s.index / hWidth(w));
+        const hx = s.index % hWidth(w);
+        a = hy * (w + 1) + (hx - 1);
+        b = hy * (w + 1) + hx;
+      } else {
+        const vy = Math.floor(s.index / (w + 1));
+        const vx = s.index % (w + 1);
+        a = (vy - 1) * (w + 1) + vx;
+        b = vy * (w + 1) + vx;
+      }
+      deg.set(a, (deg.get(a) ?? 0) + 1);
+      deg.set(b, (deg.get(b) ?? 0) + 1);
+    }
+    const allDeg2 = [...deg.values()].every((d) => d === 2);
+    const singleComponent = onEdges.length === usedVertex.size;
+    if (!allDeg2 || !singleComponent) return;
+    const acc = [];
+    for (const s of real) {
+      trySet(s.axis, s.index, 2 /* Forbidden */, acc);
+    }
+    if (acc.length) {
+      flush(12, `\u89C4\u521912\uFF1A\u5DF2\u786E\u5B9A\u7684\u73AF\u8FB9\u81EA\u8EAB\u95ED\u5408\u6210\u73AF\uFF08\u5355\u73AF\uFF09\u2192 \u5176\u4F59\u8FB9\u5168\u90E8\u6392\u9664`, acc);
+    }
+  };
+  const applyRule13 = () => {
+    const dirs = [
+      [1, 1],
+      [-1, 1],
+      [1, -1],
+      [-1, -1]
+    ];
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)];
+        if (nA !== 0) continue;
+        for (const [dx, dy] of dirs) {
+          const bx = cx + dx;
+          const by = cy + dy;
+          if (bx < 0 || by < 0 || bx >= w || by >= h) continue;
+          if (puzzle.cells[cellMaskIndex(w, bx, by)] !== 3) continue;
+          const sx = cx + (dx > 0 ? 1 : 0);
+          const sy = cy + (dy > 0 ? 1 : 0);
+          const ve = vertexEdges(w, sx, sy);
+          const vertexAll = [
+            { axis: "h", index: ve.west },
+            { axis: "h", index: ve.east },
+            { axis: "v", index: ve.north },
+            { axis: "v", index: ve.south }
+          ];
+          const eb = cellEdges(w, bx, by);
+          const bKeys = new Set(
+            [
+              { axis: "h", index: eb.top },
+              { axis: "h", index: eb.bottom },
+              { axis: "v", index: eb.left },
+              { axis: "v", index: eb.right }
+            ].map((s) => `${s.axis}:${s.index}`)
+          );
+          const inner = vertexAll.filter((s) => bKeys.has(`${s.axis}:${s.index}`));
+          if (inner.length !== 2) continue;
+          const acc = [];
+          for (const s of inner) trySet(s.axis, s.index, 1 /* On */, acc);
+          if (acc.length) {
+            flush(
+              13,
+              `\u89C4\u521913\uFF1A\u5BF9\u89D2 0-3 (${cx},${cy})-(${bx},${by}) \u2192 3 \u683C\u5728\u516C\u5171\u9876\u70B9\u7684\u4E24\u6761\u8FB9\u843D\u73AF`,
+              acc
+            );
+          }
+        }
+      }
+    }
+  };
+  const applyRule14 = () => {
+    const seen = /* @__PURE__ */ new Set();
+    const runPair = (ax, ay, bx, by, shared, outer, nA, nB) => {
+      let outMin = 0;
+      let outMax = 0;
+      const pending = [];
+      for (const s of outer) {
+        const v = edgeValue(work, s.axis, s.index);
+        if (v === 1 /* On */) outMin++;
+        else if (v === 2 /* Forbidden */) continue;
+        else pending.push(s);
+        outMax++;
+      }
+      const sum = nA + nB;
+      const sVal = edgeValue(work, shared.axis, shared.index);
+      const acc = [];
+      if (sVal === 0 /* Unknown */) {
+        const okOff = sum >= outMin && sum <= outMax;
+        const okOn = sum - 2 >= outMin && sum - 2 <= outMax;
+        if (!okOff && !okOn) {
+        } else if (okOff && !okOn) {
+          trySet(shared.axis, shared.index, 2 /* Forbidden */, acc);
+        } else if (!okOff && okOn) {
+          trySet(shared.axis, shared.index, 1 /* On */, acc);
+        }
+        if (acc.length) {
+          flush(
+            14,
+            `\u89C4\u521914\uFF1A\u76F8\u90BB\u4E24\u683C(${ax},${ay})=${nA} \u4E0E (${bx},${by})=${nB}\uFF1A\u516C\u5171\u8FB9\u53EA\u80FD\u53D6${acc[0].to === 1 /* On */ ? "\u73AF" : "\u53C9"}\uFF08\u5916\u56F4\u8FB9\u53EF\u8FBE ${outMin}..${outMax}\uFF0C\u9700\u8981 ${sum} \u6216 ${sum - 2}\uFF09`,
+            acc
+          );
+        }
+        return;
+      }
+      const outOn = sum - (sVal === 1 /* On */ ? 2 : 0);
+      if (outOn < outMin || outOn > outMax) return;
+      if (!pending.length) return;
+      if (outOn === outMax) {
+        for (const s of pending) trySet(s.axis, s.index, 1 /* On */, acc);
+      } else if (outOn === outMin) {
+        for (const s of pending) trySet(s.axis, s.index, 2 /* Forbidden */, acc);
+      }
+      if (acc.length) {
+        flush(
+          14,
+          `\u89C4\u521914\uFF1A\u76F8\u90BB\u4E24\u683C(${ax},${ay})=${nA} \u4E0E (${bx},${by})=${nB}\uFF1A\u516C\u5171\u8FB9\u5DF2\u5B9A\uFF0C\u5916\u56F4\u8FB9\u9700 ${outOn} \u6761 \u2192 \u5269\u4F59\u5916\u56F4\u8FB9${outOn === outMax ? "\u843D\u73AF" : "\u6392\u9664"}`,
+          acc
+        );
+      }
+    };
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)];
+        if (nA === null || nA === void 0) continue;
+        if (cx + 1 < w) {
+          const nB = puzzle.cells[cellMaskIndex(w, cx + 1, cy)];
+          if (nB !== null && nB !== void 0) {
+            const key = `H:${cx}:${cy}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              const ea = cellEdges(w, cx, cy);
+              const eb = cellEdges(w, cx + 1, cy);
+              runPair(
+                cx,
+                cy,
+                cx + 1,
+                cy,
+                { axis: "v", index: ea.right },
+                [
+                  { axis: "h", index: ea.top },
+                  { axis: "h", index: ea.bottom },
+                  { axis: "v", index: ea.left },
+                  { axis: "h", index: eb.top },
+                  { axis: "h", index: eb.bottom },
+                  { axis: "v", index: eb.right }
+                ],
+                nA,
+                nB
+              );
+            }
+          }
+        }
+        if (cy + 1 < h) {
+          const nB = puzzle.cells[cellMaskIndex(w, cx, cy + 1)];
+          if (nB !== null && nB !== void 0) {
+            const key = `V:${cx}:${cy}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              const ea = cellEdges(w, cx, cy);
+              const eb = cellEdges(w, cx, cy + 1);
+              runPair(
+                cx,
+                cy,
+                cx,
+                cy + 1,
+                { axis: "h", index: ea.bottom },
+                [
+                  { axis: "h", index: ea.top },
+                  { axis: "v", index: ea.left },
+                  { axis: "v", index: ea.right },
+                  { axis: "h", index: eb.bottom },
+                  { axis: "v", index: eb.left },
+                  { axis: "v", index: eb.right }
+                ],
+                nA,
+                nB
+              );
+            }
+          }
+        }
+      }
+    }
+  };
+  const applyRule15 = () => {
+    const edgeList = [];
+    const idOf = /* @__PURE__ */ new Map();
+    const addEdge = (s) => {
+      const k = `${s.axis}:${s.index}`;
+      if (!idOf.has(k)) {
+        idOf.set(k, edgeList.length);
+        edgeList.push(s);
+      }
+    };
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) addEdge({ axis: "h", index: hIndex(w, hx, hy) });
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) addEdge({ axis: "v", index: vIndex(w, vx, vy) });
+    }
+    const N = edgeList.length;
+    const parent = new Int32Array(N);
+    const diff = new Uint8Array(N);
+    for (let i = 0; i < N; i++) parent[i] = i;
+    const find = (x) => {
+      if (parent[x] === x) return x;
+      const p = parent[x];
+      const r = find(p);
+      diff[x] = diff[x] ^ diff[p];
+      parent[x] = r;
+      return r;
+    };
+    const union = (a, b, p) => {
+      const ra = find(a);
+      const rb = find(b);
+      const pa = diff[a];
+      const pb = diff[b];
+      if (ra === rb) return (pa ^ pb) === p;
+      parent[ra] = rb;
+      diff[ra] = pa ^ pb ^ p;
+      return true;
+    };
+    const addXor = (s1, s2, p) => {
+      const a = idOf.get(`${s1.axis}:${s1.index}`);
+      const b = idOf.get(`${s2.axis}:${s2.index}`);
+      if (a === void 0 || b === void 0) return;
+      union(a, b, p);
+    };
+    for (let py = 0; py <= h; py++) {
+      for (let px = 0; px <= w; px++) {
+        const ve = vertexEdges(w, px, py);
+        const all = [
+          { axis: "h", index: ve.west },
+          { axis: "h", index: ve.east },
+          { axis: "v", index: ve.north },
+          { axis: "v", index: ve.south }
+        ];
+        let on = 0;
+        let off = 0;
+        const unk = [];
+        for (const s of all) {
+          const v = edgeValue(work, s.axis, s.index);
+          if (v === 1 /* On */) on++;
+          else if (v === 2 /* Forbidden */) off++;
+          else unk.push(s);
+        }
+        if (on === 1 && unk.length === 2) addXor(unk[0], unk[1], 1);
+        else if (on === 0 && off === 2 && unk.length === 2) addXor(unk[0], unk[1], 0);
+      }
+    }
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const n = puzzle.cells[cellMaskIndex(w, cx, cy)];
+        if (n === null || n === void 0) continue;
+        const e = cellEdges(w, cx, cy);
+        const all = [
+          { axis: "h", index: e.top },
+          { axis: "h", index: e.bottom },
+          { axis: "v", index: e.left },
+          { axis: "v", index: e.right }
+        ];
+        let on = 0;
+        const unk = [];
+        for (const s of all) {
+          const v = edgeValue(work, s.axis, s.index);
+          if (v === 1 /* On */) on++;
+          else if (v === 0 /* Unknown */) unk.push(s);
+        }
+        if (on === n - 1 && unk.length === 2) addXor(unk[0], unk[1], 1);
+      }
+    }
+    const classVal = /* @__PURE__ */ new Map();
+    for (let i = 0; i < N; i++) {
+      const s = edgeList[i];
+      const v = edgeValue(work, s.axis, s.index);
+      if (v === 0 /* Unknown */) continue;
+      const r = find(i);
+      const val = (v === 1 /* On */ ? 1 : 0) ^ diff[i];
+      const prev = classVal.get(r);
+      if (prev === void 0) classVal.set(r, val === 1);
+    }
+    if (!classVal.size) return;
+    const acc = [];
+    for (let i = 0; i < N; i++) {
+      const s = edgeList[i];
+      if (edgeValue(work, s.axis, s.index) !== 0 /* Unknown */) continue;
+      const r = find(i);
+      const base = classVal.get(r);
+      if (base === void 0) continue;
+      const to = (base ? 1 : 0) ^ diff[i] ? 1 /* On */ : 2 /* Forbidden */;
+      trySet(s.axis, s.index, to, acc);
+    }
+    if (acc.length) {
+      flush(
+        15,
+        `\u89C4\u521915\uFF1A\u4E8C\u9009\u4E00\u540C\u5F02\u7EA6\u675F\u4F20\u64AD\uFF08\u6070\u597D\u4E00\u6761/\u540C\u8FDB\u540C\u51FA\uFF09\u2192 \u7531\u5DF2\u5B9A\u8FB9\u63A8\u51FA\u540C\u7C7B\u672A\u5B9A\u8FB9 ${acc.length} \u6761`,
+        acc
+      );
     }
   };
   const applyRule7 = () => {
@@ -1240,6 +1693,314 @@ function planLogicSolve(puzzle, state) {
       }
     }
   };
+  const applyRule9 = () => {
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        if (puzzle.cells[cellMaskIndex(w, cx, cy)] !== 3) continue;
+        if (cx + 1 < w && cy + 1 < h && puzzle.cells[cellMaskIndex(w, cx + 1, cy + 1)] === 3) {
+          const acc = [];
+          const ea = cellEdges(w, cx, cy);
+          const eb = cellEdges(w, cx + 1, cy + 1);
+          trySet("h", ea.top, 1 /* On */, acc);
+          trySet("v", ea.left, 1 /* On */, acc);
+          trySet("h", eb.bottom, 1 /* On */, acc);
+          trySet("v", eb.right, 1 /* On */, acc);
+          if (acc.length) flush(9, `\u89C4\u52199b\uFF1A\u5BF9\u89D23-3 (${cx},${cy})-(${cx + 1},${cy + 1}) \u2192 \u5916\u8FB9\u843D\u73AF`, acc);
+        }
+        if (cx > 0 && cy + 1 < h && puzzle.cells[cellMaskIndex(w, cx - 1, cy + 1)] === 3) {
+          const acc = [];
+          const ea = cellEdges(w, cx, cy);
+          const eb = cellEdges(w, cx - 1, cy + 1);
+          trySet("h", ea.top, 1 /* On */, acc);
+          trySet("v", ea.right, 1 /* On */, acc);
+          trySet("h", eb.bottom, 1 /* On */, acc);
+          trySet("v", eb.left, 1 /* On */, acc);
+          if (acc.length) {
+            flush(9, `\u89C4\u52199b\uFF1A\u53CD\u659C\u5BF9\u89D23-3 (${cx},${cy})-(${cx - 1},${cy + 1}) \u2192 \u5916\u8FB9\u843D\u73AF`, acc);
+          }
+        }
+      }
+    }
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx + 2 < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)];
+        const nB = puzzle.cells[cellMaskIndex(w, cx + 1, cy)];
+        const nC = puzzle.cells[cellMaskIndex(w, cx + 2, cy)];
+        if (nA !== 1 || nB !== 2 || nC !== 1) continue;
+        if (cy !== 0 && cy !== h - 1) continue;
+        const acc = [];
+        const eB = cellEdges(w, cx + 1, cy);
+        const eA = cellEdges(w, cx, cy);
+        const eC = cellEdges(w, cx + 2, cy);
+        if (cy === 0) {
+          trySet("h", eB.top, 1 /* On */, acc);
+          trySet("v", eA.left, 2 /* Forbidden */, acc);
+          trySet("h", eA.bottom, 2 /* Forbidden */, acc);
+          trySet("v", eC.right, 2 /* Forbidden */, acc);
+          trySet("h", eC.bottom, 2 /* Forbidden */, acc);
+        } else {
+          trySet("h", eB.bottom, 1 /* On */, acc);
+          trySet("v", eA.left, 2 /* Forbidden */, acc);
+          trySet("h", eA.top, 2 /* Forbidden */, acc);
+          trySet("v", eC.right, 2 /* Forbidden */, acc);
+          trySet("h", eC.top, 2 /* Forbidden */, acc);
+        }
+        if (acc.length) flush(9, `\u89C4\u52199c\uFF1A1-2-1 \u8D34\u5899 (${cx},${cy}) \u2192 \u4E2D2\u843D\u73AF`, acc);
+      }
+    }
+    for (let cy = 0; cy + 2 < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)];
+        const nB = puzzle.cells[cellMaskIndex(w, cx, cy + 1)];
+        const nC = puzzle.cells[cellMaskIndex(w, cx, cy + 2)];
+        if (nA !== 1 || nB !== 2 || nC !== 1) continue;
+        if (cx !== 0 && cx !== w - 1) continue;
+        const acc = [];
+        const eB = cellEdges(w, cx, cy + 1);
+        const eA = cellEdges(w, cx, cy);
+        const eC = cellEdges(w, cx, cy + 2);
+        if (cx === 0) {
+          trySet("v", eB.left, 1 /* On */, acc);
+          trySet("h", eA.top, 2 /* Forbidden */, acc);
+          trySet("v", eA.right, 2 /* Forbidden */, acc);
+          trySet("h", eC.bottom, 2 /* Forbidden */, acc);
+          trySet("v", eC.right, 2 /* Forbidden */, acc);
+        } else {
+          trySet("v", eB.right, 1 /* On */, acc);
+          trySet("h", eA.top, 2 /* Forbidden */, acc);
+          trySet("v", eA.left, 2 /* Forbidden */, acc);
+          trySet("h", eC.bottom, 2 /* Forbidden */, acc);
+          trySet("v", eC.left, 2 /* Forbidden */, acc);
+        }
+        if (acc.length) flush(9, `\u89C4\u52199c\uFF1A1-2-1 \u8D34\u5899\u7AD6 (${cx},${cy}) \u2192 \u4E2D2\u843D\u73AF`, acc);
+      }
+    }
+  };
+  const cellSides = [];
+  for (let cy = 0; cy < h; cy++) {
+    for (let cx = 0; cx < w; cx++) {
+      const e = cellEdges(w, cx, cy);
+      cellSides.push({
+        n: puzzle.cells[cellMaskIndex(w, cx, cy)],
+        sides: [
+          { axis: "h", index: e.top },
+          { axis: "h", index: e.bottom },
+          { axis: "v", index: e.left },
+          { axis: "v", index: e.right }
+        ]
+      });
+    }
+  }
+  const vertexSides = [];
+  for (let py = 0; py <= h; py++) {
+    for (let px = 0; px <= w; px++) {
+      const t = vertexEdges(w, px, py);
+      vertexSides.push([
+        { axis: "h", index: t.west },
+        { axis: "h", index: t.east },
+        { axis: "v", index: t.north },
+        { axis: "v", index: t.south }
+      ]);
+    }
+  }
+  const hLen = (w + 2) * (h + 1);
+  const vLen = (h + 2) * (w + 1);
+  const hEdgeCells = Array.from({ length: hLen }, () => []);
+  const vEdgeCells = Array.from({ length: vLen }, () => []);
+  for (let ci = 0; ci < cellSides.length; ci++) {
+    for (const s of cellSides[ci].sides) {
+      if (s.axis === "h") hEdgeCells[s.index].push(ci);
+      else vEdgeCells[s.index].push(ci);
+    }
+  }
+  const hEdgeVerts = Array.from({ length: hLen }, () => []);
+  const vEdgeVerts = Array.from({ length: vLen }, () => []);
+  for (let vi = 0; vi < vertexSides.length; vi++) {
+    for (const s of vertexSides[vi]) {
+      if (s.axis === "h") hEdgeVerts[s.index].push(vi);
+      else vEdgeVerts[s.index].push(vi);
+    }
+  }
+  const propagate = (hArr, vArr) => {
+    const totalCells = cellSides.length;
+    const totalVerts = vertexSides.length;
+    const cellN = new Int32Array(totalCells);
+    const cellOn = new Int32Array(totalCells);
+    const cellUnk = new Int32Array(totalCells);
+    const vertOn = new Int32Array(totalVerts);
+    const vertUnk = new Int32Array(totalVerts);
+    for (let ci = 0; ci < totalCells; ci++) {
+      const n = cellSides[ci].n;
+      cellN[ci] = n === null || n === void 0 ? -1 : n;
+      let on = 0;
+      let unk = 0;
+      for (const s of cellSides[ci].sides) {
+        const v = s.axis === "h" ? hArr[s.index] : vArr[s.index];
+        if (v === 1 /* On */) on++;
+        else if (v === 0 /* Unknown */) unk++;
+      }
+      cellOn[ci] = on;
+      cellUnk[ci] = unk;
+    }
+    for (let vi = 0; vi < totalVerts; vi++) {
+      let on = 0;
+      let unk = 0;
+      for (const s of vertexSides[vi]) {
+        const v = s.axis === "h" ? hArr[s.index] : vArr[s.index];
+        if (v === 1 /* On */) on++;
+        else if (v === 0 /* Unknown */) unk++;
+      }
+      vertOn[vi] = on;
+      vertUnk[vi] = unk;
+    }
+    const cap = totalCells + totalVerts + 8 * (hLen + vLen);
+    const queue = new Int32Array(cap);
+    let head = 0;
+    let tail = 0;
+    for (let ci = 0; ci < totalCells; ci++) queue[tail++] = ci;
+    for (let vi = 0; vi < totalVerts; vi++) queue[tail++] = totalCells + vi;
+    const setEdgeLocal = (axis, index, to) => {
+      if (axis === "h") hArr[index] = to;
+      else vArr[index] = to;
+      const cells = axis === "h" ? hEdgeCells[index] : vEdgeCells[index];
+      for (const c of cells) {
+        cellUnk[c]--;
+        if (to === 1 /* On */) cellOn[c]++;
+        if (tail < cap) queue[tail++] = c;
+      }
+      const verts = axis === "h" ? hEdgeVerts[index] : vEdgeVerts[index];
+      for (const v of verts) {
+        vertUnk[v]--;
+        if (to === 1 /* On */) vertOn[v]++;
+        if (tail < cap) queue[tail++] = totalCells + v;
+      }
+    };
+    while (head < tail) {
+      const id = queue[head++];
+      if (id < totalCells) {
+        const n = cellN[id];
+        if (n < 0) continue;
+        const on = cellOn[id];
+        const unk = cellUnk[id];
+        if (on > n || on + unk < n) return true;
+        if (unk === 0) continue;
+        let to = 0 /* Unknown */;
+        if (on === n) to = 2 /* Forbidden */;
+        else if (on + unk === n) to = 1 /* On */;
+        if (to === 0 /* Unknown */) continue;
+        for (const s of cellSides[id].sides) {
+          const cur = s.axis === "h" ? hArr[s.index] : vArr[s.index];
+          if (cur === 0 /* Unknown */) setEdgeLocal(s.axis, s.index, to);
+        }
+      } else {
+        const vi = id - totalCells;
+        const on = vertOn[vi];
+        const unk = vertUnk[vi];
+        if (on > 2) return true;
+        if (on === 1 && unk === 0) return true;
+        if (unk === 0) continue;
+        let to = 0 /* Unknown */;
+        if (on === 2) to = 2 /* Forbidden */;
+        else if (on === 1 && unk === 1) to = 1 /* On */;
+        else if (on === 0 && unk === 1) to = 2 /* Forbidden */;
+        if (to === 0 /* Unknown */) continue;
+        for (const s of vertexSides[vi]) {
+          const cur = s.axis === "h" ? hArr[s.index] : vArr[s.index];
+          if (cur === 0 /* Unknown */) setEdgeLocal(s.axis, s.index, to);
+        }
+      }
+    }
+    return false;
+  };
+  const applyRule11 = () => {
+    const vertexTightness = (px, py) => {
+      const ve = vertexEdges(w, px, py);
+      let on = 0;
+      let unk = 0;
+      for (const [axis, index] of [
+        ["h", ve.west],
+        ["h", ve.east],
+        ["v", ve.north],
+        ["v", ve.south]
+      ]) {
+        const v = edgeValue(work, axis, index);
+        if (v === 1 /* On */) on++;
+        else if (v === 0 /* Unknown */) unk++;
+      }
+      if (on === 1) return 3 + (4 - unk) * 4;
+      if (on === 2 && unk > 0) return 6;
+      if (on === 0 && unk > 0) return 1;
+      return 0;
+    };
+    const cellTightness = (cx, cy) => {
+      const n = puzzle.cells[cellMaskIndex(w, cx, cy)];
+      if (n === null || n === void 0) return 0;
+      const e = cellEdges(w, cx, cy);
+      let on = 0;
+      let unk = 0;
+      for (const [axis, index] of [
+        ["h", e.top],
+        ["h", e.bottom],
+        ["v", e.left],
+        ["v", e.right]
+      ]) {
+        const v = edgeValue(work, axis, index);
+        if (v === 1 /* On */) on++;
+        else if (v === 0 /* Unknown */) unk++;
+      }
+      if (on === n - 1 && unk > 0) return 5 + (3 - unk) * 3;
+      if (on === n && unk > 0) return 2;
+      if (on < n && unk === 0) return 8;
+      return 0;
+    };
+    const cands = [];
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) {
+        const index = hIndex(w, hx, hy);
+        if (edgeValue(work, "h", index) !== 0 /* Unknown */) continue;
+        let score = vertexTightness(hx - 1, hy) + vertexTightness(hx, hy) + cellTightness(hx - 1, hy - 1) + cellTightness(hx - 1, hy);
+        cands.push({ axis: "h", index, score });
+      }
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) {
+        const index = vIndex(w, vx, vy);
+        if (edgeValue(work, "v", index) !== 0 /* Unknown */) continue;
+        const score = vertexTightness(vx, vy - 1) + vertexTightness(vx, vy) + cellTightness(vx - 1, vy - 1) + cellTightness(vx, vy - 1);
+        cands.push({ axis: "v", index, score });
+      }
+    }
+    if (!cands.length) return;
+    cands.sort((a, b) => b.score - a.score);
+    const probe = (axis, index) => {
+      if (edgeValue(work, axis, index) !== 0 /* Unknown */) return false;
+      const tryFill = (to) => {
+        const hArr = work.h.slice();
+        const vArr = work.v.slice();
+        if (axis === "h") hArr[index] = to;
+        else vArr[index] = to;
+        return propagate(hArr, vArr);
+      };
+      const okOn = !tryFill(1 /* On */);
+      const okOff = okOn ? !tryFill(2 /* Forbidden */) : true;
+      const acc = [];
+      if (okOn && !okOff) trySet(axis, index, 1 /* On */, acc);
+      else if (!okOn && okOff) trySet(axis, index, 2 /* Forbidden */, acc);
+      if (acc.length) {
+        const banned = acc[0].to === 1 /* On */ ? 2 /* Forbidden */ : 1 /* On */;
+        flush(
+          11,
+          `\u89C4\u521911\uFF1A\u586B\u6210${banned === 1 /* On */ ? "\u73AF" : "\u53C9"}\u4F1A\u5F62\u6210\u65E0\u6CD5\u95ED\u5408\u7684\u7EBF\u5934 \u2192 \u5FC5\u4E3A${acc[0].to === 1 /* On */ ? "\u73AF" : "\u53C9"}`,
+          acc
+        );
+        return true;
+      }
+      return false;
+    };
+    for (const c of cands) {
+      if (probe(c.axis, c.index)) return;
+    }
+  };
   let saturated = true;
   for (let guard = 0; guard < 400; guard++) {
     const before = steps.length;
@@ -1251,10 +2012,18 @@ function planLogicSolve(puzzle, state) {
     applyRule4();
     applyRule5();
     applyRule6();
+    applyRule9();
+    applyRule12();
+    applyRule13();
+    applyRule14();
+    applyRule15();
     applyRule7();
     if (steps.length === before) {
-      saturated = true;
-      break;
+      applyRule11();
+      if (steps.length === before) {
+        saturated = true;
+        break;
+      }
     }
     if (guard === 399) saturated = false;
   }
@@ -1282,30 +2051,6 @@ function planLogicSolve(puzzle, state) {
     finalState: work,
     ruleSteps: steps.length,
     saturated
-  };
-}
-function collectLogicSteps(puzzle, state) {
-  const plan = planLogicSolve(puzzle, state);
-  const steps = [];
-  let cur = null;
-  for (const f of plan.frames) {
-    if (!cur || cur.rule !== f.rule || cur.label !== f.label) {
-      cur = {
-        rule: f.rule,
-        label: f.label,
-        changes: [],
-        maskCells: [],
-        maskVertices: [],
-        maskEdges: []
-      };
-      steps.push(cur);
-    }
-    cur.changes.push(f.change);
-  }
-  return {
-    steps,
-    finalState: plan.finalState,
-    masks: createMasks(puzzle.width, puzzle.height)
   };
 }
 
@@ -1362,7 +2107,8 @@ var RAW_PUZZLES = [
   { id: "blank-7x7-B", name: "\u7A7A\u767D \xB7 7\xD77 B", width: 7, height: 7, difficulty: "medium", series: "blank", cells: "0100000131000022.00002122010332223121323223221213", solH: "222222222221222222222222222212122222221212122212122222211121212211111112", solV: "222222222222222221122222211222221221222211121112222111121222222122222222" },
   { id: "blank-10x10-A", name: "\u7A7A\u767D \xB7 10\xD710 A", width: 10, height: 10, difficulty: "hard", series: "blank", cells: "000132131100.023231300122203220131232322002221221200131123230001132112000001323200000131230000002311", solH: "222221111222222221121212222221121222222112121222222121221122222222211212222212111212222222112122222222212222222222212212222222221222", solV: "222222222222222122212222222211211222212221112212211121122211212221222112221122222212222122222221111222222121112222222112222222222222" },
   { id: "blank-10x10-B", name: "\u7A7A\u767D \xB7 10\xD710 B", width: 10, height: 10, difficulty: "hard", series: "blank", cells: "1232023223311232112123321232330102322222000022212.00013213220000121323000001230100000123100000001100", solH: "222122212212211212121122212121212122221212122212222221212112222221121122222221121222222222221212222222221222222222211222222222222222", solV: "222222222222211221121112221122221211122111112222112112222222212221222212212112222221211122222211222222222121222222222222222222222222" },
-  { id: "human-15x15-a", name: "\u540D\u9898 \xB7 15\xD715 A", width: 15, height: 15, difficulty: "hard", series: "human", cells: ".23..22.........2221.3.....2.32....3..31.3....21.1.2......213....3..23.3.3.122..303.21..122.1......222.2.322...12......1..2.1...32.322.....3..2..312.32.3..3.....1...222....2.32....3...133...1..133.3.21.3..23.....2..2..1.2...3", solH: "", solV: "" }
+  { id: "human-15x15-a", name: "\u540D\u9898 \xB7 15\xD715 A", width: 15, height: 15, difficulty: "hard", series: "human", cells: ".23..22.........2221.3.....2.32....3..31.3....21.1.2......213....3..23.3.3.122..303.21..122.1......222.2.322...12......1..2.1...32.322.....3..2..312.32.3..3.....1...222....2.32....3...133...1..133.3.21.3..23.....2..2..1.2...3", solH: "", solV: "" },
+  { id: "human-25x30-img", name: "\u8BC6\u56FE \xB7 25\xD730", width: 25, height: 30, difficulty: "hard", series: "human", cells: ".33.2.1..1.1....23.3..12.....2...1..1313..2...2....3.112..3.2...3.3.2.2.322.2.32.2....21...120......131..30.3......13...13.2.23.3.2...12.1.3..2..11.13.....3.3322.22.1321..33..3........2...222..1..1.2.3.11..3..233..22..23.2..132................12...2..2.2212212.....23..2312...3.3..3.1....1..2....0.3.....1...2.1..3.2...2......332.3211.12.22.3..2223223..2.....223.3....12.1..12.321.2....22.3.2..3.2..3........2...1.1..3.2.213.12.2....212.2..21....3..22.....31.23.2...3..1..33.....2...32.01.1.01..311.1213.2.2.....3.3..2...21.....2.3.32..21.1.2...2.3.3..20.2....2...23.3.2.121....231.3.3.202.122.322.......22..2...3.3.....12..2.33.2..........22.13..12...21131.2.1.23.........0..2.....3.21..3.3..1.3.32...3.32.....3.22.132.2..3.23..212..232..2.......1.2", solH: "", solV: "" }
 ];
 
 // src/puzzles.ts
@@ -1405,34 +2151,52 @@ function getReferenceSolution(id) {
 }
 
 // scripts/logic-audit.mts
-var totalSteps = 0;
+var totalFrames = 0;
+var totalR11 = 0;
+var totalUnkAfter = 0;
 var bad = 0;
+var rows = [];
 for (const p of puzzles) {
   const sol = getReferenceSolution(p.id);
-  if (!sol) {
-    console.error("no solution", p.id);
-    process.exitCode = 1;
-    continue;
-  }
   const st = createEmptyState(p);
-  const { steps } = collectLogicSteps(p, st);
-  totalSteps += steps.length;
-  for (const step of steps) {
-    for (const c of step.changes) {
-      const truth = edgeValue(sol, c.axis, c.index);
-      if (c.to === 1 && truth !== 1) {
-        console.log(`CONFLICT ${p.id} RULE${step.rule} set ${c.axis}[${c.index}]=On sol=${truth}`);
-        console.log("  ", step.label);
-        bad++;
-      }
-      if (c.to === 2 && truth === 1) {
-        console.log(`CONFLICT ${p.id} RULE${step.rule} set ${c.axis}[${c.index}]=Off sol=On`);
-        console.log("  ", step.label);
-        bad++;
-      }
+  const plan = planLogicSolve(p, st);
+  totalFrames += plan.frames.length;
+  const byRule = /* @__PURE__ */ new Map();
+  for (const f of plan.frames) byRule.set(f.rule, (byRule.get(f.rule) ?? 0) + 1);
+  const r11 = byRule.get(11) ?? 0;
+  totalR11 += r11;
+  let wrong = 0;
+  if (sol) {
+    for (const f of plan.frames) {
+      const truth = edgeValue(sol, f.change.axis, f.change.index);
+      if (f.change.to === 1 /* On */ && truth !== 1 /* On */) wrong++;
+      if (f.change.to === 2 /* Forbidden */ && truth === 1 /* On */) wrong++;
     }
   }
+  const v = validate(plan.finalState, p);
+  const unk = countUnknown(plan);
+  totalUnkAfter += unk;
+  const ok = wrong === 0 && v.solved;
+  if (!ok) {
+    bad++;
+    console.log(`BAD ${p.id} wrong=${wrong} solved=${v.solved} loop=${v.loop.kind} badPoints=${v.badPoints.length} badCells=${v.badCells.length}`);
+  }
+  const ruleStr = [...byRule.entries()].sort((a, b) => a[0] - b[0]).map(([r, n]) => `R${r}=${n}`).join(" ");
+  rows.push(
+    `${p.id.padEnd(18)} ${(p.width + "x" + p.height).padEnd(7)} frames=${String(plan.frames.length).padStart(4)} step=${String(plan.ruleSteps).padStart(3)} R11(\u524D\u77BB)=${String(r11).padStart(3)} unk=${String(unk).padStart(2)} ${sol ? "ref-ok" : "no-ref"} ${ok ? "solved" : "FAIL"}`
+  );
+  if (r11 > 0) console.log(`  \xB7 ${p.id}: ${ruleStr}`);
 }
-console.log("total steps from empty", totalSteps, "conflicts", bad);
+function countUnknown(plan) {
+  let unk = 0;
+  for (const x of plan.finalState.h) if (x === 0 /* Unknown */) unk++;
+  for (const x of plan.finalState.v) if (x === 0 /* Unknown */) unk++;
+  return unk;
+}
+console.log(rows.join("\n"));
+console.log("");
+console.log(
+  `TOTAL puzzles=${puzzles.length} frames=${totalFrames} \u524D\u77BB\u53CD\u8BC1\u5E27(R11)=${totalR11} \u7EC8\u6001\u672A\u5B9A\u8FB9=${totalUnkAfter} \u95EE\u9898\u9898\u6570=${bad}`
+);
 if (bad) process.exitCode = 1;
-else console.log("OK no conflicts with reference solutions");
+else console.log("OK \u5168\u90E8\u63A8\u7406\u7ED3\u8BBA\u4E0E\u53C2\u8003\u89E3\u4E00\u81F4\uFF0C\u7EC8\u6001\u5747\u4E3A\u5408\u6CD5\u5355\u73AF\u89E3");

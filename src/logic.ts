@@ -2,6 +2,7 @@ import {
   cellEdges,
   edgeValue,
   hIndex,
+  hWidth,
   setEdge,
   vIndex,
   vertexEdges,
@@ -18,7 +19,7 @@ export interface LogicChange {
 }
 
 export interface LogicStep {
-  rule: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+  rule: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15
   label: string
   changes: LogicChange[]
   maskCells: number[]
@@ -832,6 +833,15 @@ export function planLogicSolve(
     }
   }
 
+  /**
+   * 规则7：相邻 3-3。
+   * 可证明的结论（对任意单环解都成立）：
+   *   - 两条「外向」边（共享边延长线，即两个端点上不属于这两格的那条边）都排除；
+   *   - 两格的「外侧对边」（A.left / B.right 或 A.top / B.bottom）都在环上。
+   * 反例说明「共享边一定在环上」不成立：2×1 骨牌本身就是合法单环，
+   * 此时两格都数 3、共享边为叉。因此规则7 不再推断共享边。
+   * （骨牌闭环由规则12「环路闭合」处理：闭环后其余边全叉。）
+   */
   const applyRule6 = () => {
     const seen = new Set<string>()
     const applyPair = (cx: number, cy: number, dir: 'H' | 'V') => {
@@ -840,7 +850,6 @@ export function planLogicSolve(
       for (const v of g.vertices) {
         trySet(v.outward.axis, v.outward.index, ES.Forbidden, acc)
       }
-      trySet(g.shared.axis, g.shared.index, ES.On, acc)
       if (dir === 'H') {
         trySet('v', g.a.left, ES.On, acc)
         trySet('v', g.b.right, ES.On, acc)
@@ -849,7 +858,7 @@ export function planLogicSolve(
         trySet('h', g.b.bottom, ES.On, acc)
       }
       if (acc.length) {
-        flush(7, `规则7：双3 外向× + 共享边与对边落环`, acc)
+        flush(7, `规则7：双3 外向× + 各自外侧对边落环（共享边不定）`, acc)
       }
     }
 
@@ -871,6 +880,442 @@ export function planLogicSolve(
           }
         }
       }
+    }
+  }
+
+  // —— 规则12：环路闭合（提前闭环检测）——
+  /**
+   * 规则12：单环解中，「已确定的环边」一旦自身闭合成环，
+   * 这个环就只能是最终解的那个环 → 其余所有未定边必须全部排除。
+   * 反之，若 On 边图里出现了环，但还存在别的 On 边（另一条链/另一个环），
+   * 最终不可能并成单环 → 记冲突。
+   *
+   * 依据：最终解是「一条」单环；已 On 的边在解里也必须是 On，
+   * 它们若含环，则该环就是解环本身，任何其它 On 边都会变成第二段/第二个环。
+   */
+  const applyRule12 = () => {
+    const vCount = (w + 1) * (h + 1)
+    const parent = new Int32Array(vCount)
+    for (let i = 0; i < vCount; i++) parent[i] = i
+    const find = (x: number): number => {
+      let r = x
+      while (parent[r] !== r) r = parent[r]!
+      while (parent[x] !== r) {
+        const nx = parent[x]!
+        parent[x] = r
+        x = nx
+      }
+      return r
+    }
+
+    const onEdges: Side[] = []
+    const real: Side[] = []
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) real.push({ axis: 'h', index: hIndex(w, hx, hy) })
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) real.push({ axis: 'v', index: vIndex(w, vx, vy) })
+    }
+    for (const s of real) {
+      if (edgeValue(work, s.axis, s.index) === ES.On) onEdges.push(s)
+    }
+    if (!onEdges.length) return
+
+    let cycleEdge: Side | null = null
+    const usedVertex = new Set<number>()
+    for (const s of onEdges) {
+      // 端点：h 边 (hx-1,hy)-(hx,hy)；v 边 (vx,vy-1)-(vx,vy)
+      let a: number
+      let b: number
+      if (s.axis === 'h') {
+        const hy = Math.floor(s.index / hWidth(w))
+        const hx = s.index % hWidth(w)
+        a = hy * (w + 1) + (hx - 1)
+        b = hy * (w + 1) + hx
+      } else {
+        const vy = Math.floor(s.index / (w + 1))
+        const vx = s.index % (w + 1)
+        a = (vy - 1) * (w + 1) + vx
+        b = vy * (w + 1) + vx
+      }
+      usedVertex.add(a)
+      usedVertex.add(b)
+      const ra = find(a)
+      const rb = find(b)
+      if (ra === rb) cycleEdge = s
+      else parent[ra] = rb
+    }
+    if (!cycleEdge) return
+
+    // 出现环：合法的唯一可能是「On 边恰好组成这一个环」（每个端点度数 2、只有一个连通分量）
+    const deg = new Map<number, number>()
+    for (const s of onEdges) {
+      let a: number
+      let b: number
+      if (s.axis === 'h') {
+        const hy = Math.floor(s.index / hWidth(w))
+        const hx = s.index % hWidth(w)
+        a = hy * (w + 1) + (hx - 1)
+        b = hy * (w + 1) + hx
+      } else {
+        const vy = Math.floor(s.index / (w + 1))
+        const vx = s.index % (w + 1)
+        a = (vy - 1) * (w + 1) + vx
+        b = vy * (w + 1) + vx
+      }
+      deg.set(a, (deg.get(a) ?? 0) + 1)
+      deg.set(b, (deg.get(b) ?? 0) + 1)
+    }
+    const allDeg2 = [...deg.values()].every((d) => d === 2)
+    const singleComponent = onEdges.length === usedVertex.size
+    // 环边没组成「干净的单环」时不做结论（可能只是中间状态的链，交给其它规则/前瞻）
+    if (!allDeg2 || !singleComponent) return
+
+    // 已经是完整单环：其余未定边全部排除
+    const acc: LogicChange[] = []
+    for (const s of real) {
+      trySet(s.axis, s.index, ES.Forbidden, acc)
+    }
+    if (acc.length) {
+      flush(12, `规则12：已确定的环边自身闭合成环（单环）→ 其余边全部排除`, acc)
+    }
+  }
+
+  // —— 规则13：对角 0-3 ——
+  /**
+   * 规则13：数字 0 与数字 3 斜对角相邻（共用一个顶点）。
+   * 0 格在公共顶点上的两条边全部排除；该顶点度数只能 0/2。
+   * 3 格若在公共顶点上一条都不连（度 0），它另外两条边最多补 2 < 3，矛盾；
+   * 所以 3 格在公共顶点上的两条边必须都在环上。
+   */
+  const applyRule13 = () => {
+    const dirs = [
+      [1, 1],
+      [-1, 1],
+      [1, -1],
+      [-1, -1],
+    ] as const
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)] as CellNumber
+        if (nA !== 0) continue
+        for (const [dx, dy] of dirs) {
+          const bx = cx + dx
+          const by = cy + dy
+          if (bx < 0 || by < 0 || bx >= w || by >= h) continue
+          if (puzzle.cells[cellMaskIndex(w, bx, by)] !== 3) continue
+          const sx = cx + (dx > 0 ? 1 : 0)
+          const sy = cy + (dy > 0 ? 1 : 0)
+          const ve = vertexEdges(w, sx, sy)
+          const vertexAll: Side[] = [
+            { axis: 'h', index: ve.west },
+            { axis: 'h', index: ve.east },
+            { axis: 'v', index: ve.north },
+            { axis: 'v', index: ve.south },
+          ]
+          const eb = cellEdges(w, bx, by)
+          const bKeys = new Set(
+            [
+              { axis: 'h', index: eb.top },
+              { axis: 'h', index: eb.bottom },
+              { axis: 'v', index: eb.left },
+              { axis: 'v', index: eb.right },
+            ].map((s) => `${s.axis}:${s.index}`),
+          )
+          const inner = vertexAll.filter((s) => bKeys.has(`${s.axis}:${s.index}`))
+          if (inner.length !== 2) continue
+          const acc: LogicChange[] = []
+          for (const s of inner) trySet(s.axis, s.index, ES.On, acc)
+          if (acc.length) {
+            flush(
+              13,
+              `规则13：对角 0-3 (${cx},${cy})-(${bx},${by}) → 3 格在公共顶点的两条边落环`,
+              acc,
+            )
+          }
+        }
+      }
+    }
+  }
+
+  // —— 规则14：相邻两格计数（公共边 + 外围边） ——
+  /**
+   * 规则14：相邻两格 A、B 的数字为 nA、nB，公共边 s，其余 6 条边记为「外围边」。
+   * 每条外围边只属于 A/B 之一，公共边同时属于两格，故任一完整解满足
+   *     nA + nB =（外围边在环上的条数 outOn）+ 2·s
+   * 于是：
+   *   - s 已知：outOn 被唯一确定；若 outOn 等于外围边最多/最少可达到值，
+   *     则剩余未知的外围边全部落环 / 全部排除；
+   *   - s 未知：两种取值各对应 outOn = nA+nB 与 nA+nB−2，
+   *     落在可达区间之外的取值不可能 → 公共边被确定。
+   * 全部推导只用到两条格数字和若干条边的当前状态，属局部可判定。
+   */
+  const applyRule14 = () => {
+    const seen = new Set<string>()
+    const runPair = (
+      ax: number,
+      ay: number,
+      bx: number,
+      by: number,
+      shared: Side,
+      outer: Side[],
+      nA: number,
+      nB: number,
+    ) => {
+      let outMin = 0
+      let outMax = 0
+      const pending: Side[] = []
+      for (const s of outer) {
+        const v = edgeValue(work, s.axis, s.index)
+        if (v === ES.On) outMin++
+        else if (v === ES.Forbidden) continue
+        else pending.push(s)
+        outMax++
+      }
+      const sum = nA + nB
+      const sVal = edgeValue(work, shared.axis, shared.index)
+      const acc: LogicChange[] = []
+
+      if (sVal === ES.Unknown) {
+        const okOff = sum >= outMin && sum <= outMax // s=0 → outOn = sum
+        const okOn = sum - 2 >= outMin && sum - 2 <= outMax // s=1 → outOn = sum-2
+        if (!okOff && !okOn) {
+          // 盘面已矛盾：留给后续规则/冲突检测，这里不落子
+        } else if (okOff && !okOn) {
+          trySet(shared.axis, shared.index, ES.Forbidden, acc)
+        } else if (!okOff && okOn) {
+          trySet(shared.axis, shared.index, ES.On, acc)
+        }
+        if (acc.length) {
+          flush(
+            14,
+            `规则14：相邻两格(${ax},${ay})=${nA} 与 (${bx},${by})=${nB}：公共边只能取${acc[0]!.to === ES.On ? '环' : '叉'}（外围边可达 ${outMin}..${outMax}，需要 ${sum} 或 ${sum - 2}）`,
+            acc,
+          )
+        }
+        return
+      }
+
+      const outOn = sum - (sVal === ES.On ? 2 : 0)
+      if (outOn < outMin || outOn > outMax) return
+      if (!pending.length) return
+      if (outOn === outMax) {
+        for (const s of pending) trySet(s.axis, s.index, ES.On, acc)
+      } else if (outOn === outMin) {
+        for (const s of pending) trySet(s.axis, s.index, ES.Forbidden, acc)
+      }
+      if (acc.length) {
+        flush(
+          14,
+          `规则14：相邻两格(${ax},${ay})=${nA} 与 (${bx},${by})=${nB}：公共边已定，外围边需 ${outOn} 条 → 剩余外围边${outOn === outMax ? '落环' : '排除'}`,
+          acc,
+        )
+      }
+    }
+
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const nA = puzzle.cells[cellMaskIndex(w, cx, cy)] as CellNumber
+        if (nA === null || nA === undefined) continue
+        // 水平右邻
+        if (cx + 1 < w) {
+          const nB = puzzle.cells[cellMaskIndex(w, cx + 1, cy)] as CellNumber
+          if (nB !== null && nB !== undefined) {
+            const key = `H:${cx}:${cy}`
+            if (!seen.has(key)) {
+              seen.add(key)
+              const ea = cellEdges(w, cx, cy)
+              const eb = cellEdges(w, cx + 1, cy)
+              runPair(
+                cx,
+                cy,
+                cx + 1,
+                cy,
+                { axis: 'v', index: ea.right },
+                [
+                  { axis: 'h', index: ea.top },
+                  { axis: 'h', index: ea.bottom },
+                  { axis: 'v', index: ea.left },
+                  { axis: 'h', index: eb.top },
+                  { axis: 'h', index: eb.bottom },
+                  { axis: 'v', index: eb.right },
+                ],
+                nA,
+                nB,
+              )
+            }
+          }
+        }
+        // 垂直下邻
+        if (cy + 1 < h) {
+          const nB = puzzle.cells[cellMaskIndex(w, cx, cy + 1)] as CellNumber
+          if (nB !== null && nB !== undefined) {
+            const key = `V:${cx}:${cy}`
+            if (!seen.has(key)) {
+              seen.add(key)
+              const ea = cellEdges(w, cx, cy)
+              const eb = cellEdges(w, cx, cy + 1)
+              runPair(
+                cx,
+                cy,
+                cx,
+                cy + 1,
+                { axis: 'h', index: ea.bottom },
+                [
+                  { axis: 'h', index: ea.top },
+                  { axis: 'v', index: ea.left },
+                  { axis: 'v', index: ea.right },
+                  { axis: 'h', index: eb.bottom },
+                  { axis: 'v', index: eb.left },
+                  { axis: 'v', index: eb.right },
+                ],
+                nA,
+                nB,
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // —— 规则15：二选一同异约束传播 ——
+  /**
+   * 规则15：把「恰好一条在环上」/「两条同进同出」这类局部事实编码成同或/异或约束，
+   * 用带权并查集传播——只要某条边已被确定，同类的边全部随之确定。
+   * 这一族结论在数回里常以「一个顶点还差一条边，两条候选边各自连着别的顶点」的链出现，
+   * 是规则1/5 的额度饱和覆盖不到的部分。
+   *
+   * 约束来源（全部是单环解的必然条件）：
+   *   - 顶点度 ∈ {0,2}：
+   *       on=1、未定 2 条      → 这两条恰好一条在环上（异或 1）
+   *       on=0、排除 2 条、未定 2 条 → 这两条同进同出（异或 0）——角点两条真实边即此例
+   *   - 格数字：已 on = n−1、未定 2 条 → 这两条恰好一条在环上（异或 1）
+   *
+   * 只做「必要条件的传递」，不假设、不枚举，属于可证明的局部演绎。
+   */
+  const applyRule15 = () => {
+    const edgeList: Side[] = []
+    const idOf = new Map<string, number>()
+    const addEdge = (s: Side) => {
+      const k = `${s.axis}:${s.index}`
+      if (!idOf.has(k)) {
+        idOf.set(k, edgeList.length)
+        edgeList.push(s)
+      }
+    }
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) addEdge({ axis: 'h', index: hIndex(w, hx, hy) })
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) addEdge({ axis: 'v', index: vIndex(w, vx, vy) })
+    }
+    const N = edgeList.length
+    const parent = new Int32Array(N)
+    const diff = new Uint8Array(N) // 与父节点的取值奇偶差
+    for (let i = 0; i < N; i++) parent[i] = i
+    const find = (x: number): number => {
+      if (parent[x] === x) return x
+      const p = parent[x]!
+      const r = find(p)
+      diff[x] = (diff[x]! ^ diff[p]!) as 0 | 1
+      parent[x] = r
+      return r
+    }
+    const union = (a: number, b: number, p: 0 | 1): boolean => {
+      const ra = find(a)
+      const rb = find(b)
+      const pa = diff[a]!
+      const pb = diff[b]!
+      if (ra === rb) return (pa ^ pb) === p
+      parent[ra] = rb
+      diff[ra] = (pa ^ pb ^ p) as 0 | 1
+      return true
+    }
+    const addXor = (s1: Side, s2: Side, p: 0 | 1) => {
+      const a = idOf.get(`${s1.axis}:${s1.index}`)
+      const b = idOf.get(`${s2.axis}:${s2.index}`)
+      if (a === undefined || b === undefined) return
+      union(a, b, p) // 矛盾留给其它规则/冲突检测
+    }
+
+    // 顶点约束
+    for (let py = 0; py <= h; py++) {
+      for (let px = 0; px <= w; px++) {
+        const ve = vertexEdges(w, px, py)
+        const all: Side[] = [
+          { axis: 'h', index: ve.west },
+          { axis: 'h', index: ve.east },
+          { axis: 'v', index: ve.north },
+          { axis: 'v', index: ve.south },
+        ]
+        let on = 0
+        let off = 0
+        const unk: Side[] = []
+        for (const s of all) {
+          const v = edgeValue(work, s.axis, s.index)
+          if (v === ES.On) on++
+          else if (v === ES.Forbidden) off++
+          else unk.push(s)
+        }
+        if (on === 1 && unk.length === 2) addXor(unk[0]!, unk[1]!, 1)
+        else if (on === 0 && off === 2 && unk.length === 2) addXor(unk[0]!, unk[1]!, 0)
+      }
+    }
+    // 格约束
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        const n = puzzle.cells[cellMaskIndex(w, cx, cy)] as CellNumber
+        if (n === null || n === undefined) continue
+        const e = cellEdges(w, cx, cy)
+        const all: Side[] = [
+          { axis: 'h', index: e.top },
+          { axis: 'h', index: e.bottom },
+          { axis: 'v', index: e.left },
+          { axis: 'v', index: e.right },
+        ]
+        let on = 0
+        const unk: Side[] = []
+        for (const s of all) {
+          const v = edgeValue(work, s.axis, s.index)
+          if (v === ES.On) on++
+          else if (v === ES.Unknown) unk.push(s)
+        }
+        if (on === n - 1 && unk.length === 2) addXor(unk[0]!, unk[1]!, 1)
+      }
+    }
+
+    // 类取值：从已知边反推每个类的实际取值
+    const classVal = new Map<number, boolean>() // true = On
+    for (let i = 0; i < N; i++) {
+      const s = edgeList[i]!
+      const v = edgeValue(work, s.axis, s.index)
+      if (v === ES.Unknown) continue
+      const r = find(i)
+      const val = ((v === ES.On) ? 1 : 0) ^ diff[i]!
+      const prev = classVal.get(r)
+      if (prev === undefined) classVal.set(r, val === 1)
+      // 同类的已知边取值不一致说明盘面矛盾，交给其它规则
+    }
+    if (!classVal.size) return
+
+    // 由已知类确定同类未定边
+    const acc: LogicChange[] = []
+    for (let i = 0; i < N; i++) {
+      const s = edgeList[i]!
+      if (edgeValue(work, s.axis, s.index) !== ES.Unknown) continue
+      const r = find(i)
+      const base = classVal.get(r)
+      if (base === undefined) continue
+      const to = (base ? 1 : 0) ^ diff[i]! ? ES.On : ES.Forbidden
+      trySet(s.axis, s.index, to, acc)
+    }
+    if (acc.length) {
+      flush(
+        15,
+        `规则15：二选一同异约束传播（恰好一条/同进同出）→ 由已定边推出同类未定边 ${acc.length} 条`,
+        acc,
+      )
     }
   }
 
@@ -1023,7 +1468,7 @@ export function planLogicSolve(
   }
 
 
-  // —— 规则11 预计算：每格/每顶点的四条边 ——
+  // —— 规则11 预计算：每格/每顶点的四条边 + 边到格/顶点的反查 ——
   const cellSides: Array<{ n: CellNumber; sides: Side[] }> = []
   for (let cy = 0; cy < h; cy++) {
     for (let cx = 0; cx < w; cx++) {
@@ -1051,57 +1496,121 @@ export function planLogicSolve(
       ])
     }
   }
+  const hLen = (w + 2) * (h + 1)
+  const vLen = (h + 2) * (w + 1)
+  const hEdgeCells: number[][] = Array.from({ length: hLen }, () => [])
+  const vEdgeCells: number[][] = Array.from({ length: vLen }, () => [])
+  for (let ci = 0; ci < cellSides.length; ci++) {
+    for (const s of cellSides[ci]!.sides) {
+      if (s.axis === 'h') hEdgeCells[s.index]!.push(ci)
+      else vEdgeCells[s.index]!.push(ci)
+    }
+  }
+  const hEdgeVerts: number[][] = Array.from({ length: hLen }, () => [])
+  const vEdgeVerts: number[][] = Array.from({ length: vLen }, () => [])
+  for (let vi = 0; vi < vertexSides.length; vi++) {
+    for (const s of vertexSides[vi]!) {
+      if (s.axis === 'h') hEdgeVerts[s.index]!.push(vi)
+      else vEdgeVerts[s.index]!.push(vi)
+    }
+  }
 
-  /** 在 hArr/vArr 上传播格子+顶点约束到不动点；出现矛盾返回 true（数组就地修改） */
+  /**
+   * 在 hArr/vArr 上传播格子+顶点约束到不动点；出现矛盾返回 true（数组就地修改）。
+   * 用「脏队列」实现：只有计数变化的格/顶点才重新检查，单次传播代价与改动量成正比，
+   * 而不是每轮全盘扫描（25×30 这类大题的规则11 探测因此快 1~2 个数量级）。
+   */
   const propagate = (hArr: EdgeState[], vArr: EdgeState[]): boolean => {
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const c of cellSides) {
-        if (c.n === null || c.n === undefined) continue
-        let on = 0
-        let off = 0
-        const unk: Side[] = []
-        for (const s of c.sides) {
-          const v = s.axis === 'h' ? hArr[s.index] : vArr[s.index]
-          if (v === ES.On) on++
-          else if (v === ES.Forbidden) off++
-          else unk.push(s)
-        }
-        if (on > c.n || on + unk.length < c.n) return true
-        if (!unk.length) continue
-        const to = on === c.n ? ES.Forbidden : off + c.n === 4 ? ES.On : null
-        if (to === null) continue
-        for (const s of unk) {
-          if (s.axis === 'h') hArr[s.index] = to
-          else vArr[s.index] = to
-        }
-        changed = true
+    const totalCells = cellSides.length
+    const totalVerts = vertexSides.length
+    const cellN = new Int32Array(totalCells)
+    const cellOn = new Int32Array(totalCells)
+    const cellUnk = new Int32Array(totalCells)
+    const vertOn = new Int32Array(totalVerts)
+    const vertUnk = new Int32Array(totalVerts)
+    for (let ci = 0; ci < totalCells; ci++) {
+      const n = cellSides[ci]!.n
+      cellN[ci] = n === null || n === undefined ? -1 : n
+      let on = 0
+      let unk = 0
+      for (const s of cellSides[ci]!.sides) {
+        const v = s.axis === 'h' ? hArr[s.index]! : vArr[s.index]!
+        if (v === ES.On) on++
+        else if (v === ES.Unknown) unk++
       }
-      for (const sides of vertexSides) {
-        let on = 0
-        let off = 0
-        const unk: Side[] = []
-        for (const s of sides) {
-          const v = s.axis === 'h' ? hArr[s.index] : vArr[s.index]
-          if (v === ES.On) on++
-          else if (v === ES.Forbidden) off++
-          else unk.push(s)
+      cellOn[ci] = on
+      cellUnk[ci] = unk
+    }
+    for (let vi = 0; vi < totalVerts; vi++) {
+      let on = 0
+      let unk = 0
+      for (const s of vertexSides[vi]!) {
+        const v = s.axis === 'h' ? hArr[s.index]! : vArr[s.index]!
+        if (v === ES.On) on++
+        else if (v === ES.Unknown) unk++
+      }
+      vertOn[vi] = on
+      vertUnk[vi] = unk
+    }
+
+    const cap = totalCells + totalVerts + 8 * (hLen + vLen)
+    const queue = new Int32Array(cap)
+    let head = 0
+    let tail = 0
+    for (let ci = 0; ci < totalCells; ci++) queue[tail++] = ci
+    for (let vi = 0; vi < totalVerts; vi++) queue[tail++] = totalCells + vi
+
+    const setEdgeLocal = (axis: Axis, index: number, to: EdgeState) => {
+      if (axis === 'h') hArr[index] = to
+      else vArr[index] = to
+      const cells = axis === 'h' ? hEdgeCells[index]! : vEdgeCells[index]!
+      for (const c of cells) {
+        cellUnk[c]!--
+        if (to === ES.On) cellOn[c]!++
+        if (tail < cap) queue[tail++] = c
+      }
+      const verts = axis === 'h' ? hEdgeVerts[index]! : vEdgeVerts[index]!
+      for (const v of verts) {
+        vertUnk[v]!--
+        if (to === ES.On) vertOn[v]!++
+        if (tail < cap) queue[tail++] = totalCells + v
+      }
+    }
+
+    while (head < tail) {
+      const id = queue[head++]!
+      if (id < totalCells) {
+        const n = cellN[id]!
+        if (n < 0) continue
+        const on = cellOn[id]!
+        const unk = cellUnk[id]!
+        if (on > n || on + unk < n) return true
+        if (unk === 0) continue
+        let to: EdgeState = ES.Unknown
+        if (on === n) to = ES.Forbidden
+        else if (on + unk === n) to = ES.On
+        if (to === ES.Unknown) continue
+        for (const s of cellSides[id]!.sides) {
+          const cur = s.axis === 'h' ? hArr[s.index]! : vArr[s.index]!
+          if (cur === ES.Unknown) setEdgeLocal(s.axis, s.index, to)
         }
+      } else {
+        const vi = id - totalCells
+        const on = vertOn[vi]!
+        const unk = vertUnk[vi]!
         if (on > 2) return true
         // 线头：只有 1 条环边且没有未定边可救 → 永远闭不成环
-        if (on === 1 && unk.length === 0) return true
-        if (!unk.length) continue
-        let to: EdgeState | null = null
+        if (on === 1 && unk === 0) return true
+        if (unk === 0) continue
+        let to: EdgeState = ES.Unknown
         if (on === 2) to = ES.Forbidden // 度数已满，其余排除
-        else if (on === 1 && unk.length === 1) to = ES.On // 还差一条才能闭合成 2 度
-        else if (on === 0 && unk.length === 1) to = ES.Forbidden // 只能取 0 度
-        if (to === null) continue
-        for (const s of unk) {
-          if (s.axis === 'h') hArr[s.index] = to
-          else vArr[s.index] = to
+        else if (on === 1 && unk === 1) to = ES.On // 还差一条才能闭合成 2 度
+        else if (on === 0 && unk === 1) to = ES.Forbidden // 只能取 0 度
+        if (to === ES.Unknown) continue
+        for (const s of vertexSides[vi]!) {
+          const cur = s.axis === 'h' ? hArr[s.index]! : vArr[s.index]!
+          if (cur === ES.Unknown) setEdgeLocal(s.axis, s.index, to)
         }
-        changed = true
       }
     }
     return false
@@ -1112,10 +1621,80 @@ export function planLogicSolve(
    * 对每条未定边分别试"落环"/"打叉"，各跑一遍传播：若某种填法会推出矛盾
    * （格子环边数超过数字或补不上；顶点度数为 1 且没有未定边可救 = 线头无法闭合），
    * 则该填法错误，此边必定是另一种填法。
+   *
+   * 每轮只落「一条」前瞻结论就返回主循环：连锁后果交给规则1-15 常规传播，
+   * 回放里前瞻帧更少（也不让前瞻包揽本该由常规规则完成的推演）。
+   * 探测顺序按「局部紧张度」排序，先试最可能一步推死的边，避免整盘反复空扫。
    */
   const applyRule11 = () => {
-    const probe = (axis: Axis, index: number) => {
-      if (edgeValue(work, axis, index) !== ES.Unknown) return
+    const vertexTightness = (px: number, py: number): number => {
+      const ve = vertexEdges(w, px, py)
+      let on = 0
+      let unk = 0
+      for (const [axis, index] of [
+        ['h', ve.west],
+        ['h', ve.east],
+        ['v', ve.north],
+        ['v', ve.south],
+      ] as const) {
+        const v = edgeValue(work, axis, index)
+        if (v === ES.On) on++
+        else if (v === ES.Unknown) unk++
+      }
+      // 已经 1 条环边、只剩少量未定 → 最容易推出线头矛盾
+      if (on === 1) return 3 + (4 - unk) * 4
+      if (on === 2 && unk > 0) return 6
+      if (on === 0 && unk > 0) return 1
+      return 0
+    }
+    const cellTightness = (cx: number, cy: number): number => {
+      const n = puzzle.cells[cellMaskIndex(w, cx, cy)] as CellNumber
+      if (n === null || n === undefined) return 0
+      const e = cellEdges(w, cx, cy)
+      let on = 0
+      let unk = 0
+      for (const [axis, index] of [
+        ['h', e.top],
+        ['h', e.bottom],
+        ['v', e.left],
+        ['v', e.right],
+      ] as const) {
+        const v = edgeValue(work, axis, index)
+        if (v === ES.On) on++
+        else if (v === ES.Unknown) unk++
+      }
+      if (on === n - 1 && unk > 0) return 5 + (3 - unk) * 3
+      if (on === n && unk > 0) return 2
+      if (on < n && unk === 0) return 8
+      return 0
+    }
+    type Cand = { axis: Axis; index: number; score: number }
+    const cands: Cand[] = []
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) {
+        const index = hIndex(w, hx, hy)
+        if (edgeValue(work, 'h', index) !== ES.Unknown) continue
+        let score =
+          vertexTightness(hx - 1, hy) + vertexTightness(hx, hy) +
+          cellTightness(hx - 1, hy - 1) + cellTightness(hx - 1, hy)
+        cands.push({ axis: 'h', index, score })
+      }
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) {
+        const index = vIndex(w, vx, vy)
+        if (edgeValue(work, 'v', index) !== ES.Unknown) continue
+        const score =
+          vertexTightness(vx, vy - 1) + vertexTightness(vx, vy) +
+          cellTightness(vx - 1, vy - 1) + cellTightness(vx, vy - 1)
+        cands.push({ axis: 'v', index, score })
+      }
+    }
+    if (!cands.length) return
+    cands.sort((a, b) => b.score - a.score)
+
+    const probe = (axis: Axis, index: number): boolean => {
+      if (edgeValue(work, axis, index) !== ES.Unknown) return false
       const tryFill = (to: EdgeState): boolean => {
         const hArr = work.h.slice()
         const vArr = work.v.slice()
@@ -1135,13 +1714,12 @@ export function planLogicSolve(
           `规则11：填成${banned === ES.On ? '环' : '叉'}会形成无法闭合的线头 → 必为${acc[0]!.to === ES.On ? '环' : '叉'}`,
           acc,
         )
+        return true
       }
+      return false
     }
-    for (let cy = 0; cy <= h; cy++) {
-      for (let cx = 1; cx <= w; cx++) probe('h', hIndex(w, cx, cy))
-    }
-    for (let vy = 1; vy <= h; vy++) {
-      for (let vx = 0; vx <= w; vx++) probe('v', vIndex(w, vx, vy))
+    for (const c of cands) {
+      if (probe(c.axis, c.index)) return
     }
   }
 
@@ -1157,8 +1735,12 @@ export function planLogicSolve(
     applyRule4()
     applyRule5()
     applyRule6()
-    applyRule7()
     applyRule9()
+    applyRule12()
+    applyRule13()
+    applyRule14()
+    applyRule15()
+    applyRule7()
     if (steps.length === before) {
       // 常规规则推不动了，用线头检测做一步前瞻破局
       applyRule11()

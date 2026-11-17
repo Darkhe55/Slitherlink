@@ -8,6 +8,8 @@
     "start": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "audit": "esbuild scripts/logic-audit.mts --bundle --format=esm --platform=node --outfile=scripts/logic-audit.mjs && node scripts/logic-audit.mjs",
+    "logic-test": "esbuild scripts/logic-test.mts --bundle --format=esm --platform=node --outfile=scripts/logic-test.mjs && node scripts/logic-test.mjs",
     "import-image": "node scripts/import-image.mjs",
     "ocr-board": "node scripts/ocr-board.mjs"
   },
