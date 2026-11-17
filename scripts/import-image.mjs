@@ -122,7 +122,7 @@ const r = await page.evaluate(async (u) => {
       }
       const bw = maxX - minX + 1
       const bh = maxY - minY + 1
-      if (n >= 55 && n <= 200 && Math.abs(bw - bh) <= 4 && bw >= 7 && bw <= 15) {
+      if (n >= 55 && n <= 200 && Math.abs(bw - bh) <= 1 && bw >= 7 && bw <= 13) {
         dots.push({ x: sx / n, y: sy / n })
       }
     }
@@ -467,10 +467,29 @@ if (verify) {
 
 const id = `img-${width}x${height}-${Date.now().toString(36)}`
 const name = nameOpt || `识图 · ${width}×${height}`
-const entry = `  { id: ${JSON.stringify(id)}, name: ${JSON.stringify(name)}, width: ${width}, height: ${height}, difficulty: "hard", series: ${JSON.stringify(series)}, cells: ${JSON.stringify(cells)}, solH: ${JSON.stringify(solH)}, solV: ${JSON.stringify(solV)} },\n`
-const dataFile = path.resolve('src/puzzles-data.ts')
-const text = fs.readFileSync(dataFile, 'utf8').replace(/\r\n/g, '\n')
-const marker = text.lastIndexOf('\n]')
-if (marker < 0) throw new Error('puzzles-data.ts 格式异常：找不到结尾 ]')
-fs.writeFileSync(dataFile, text.slice(0, marker + 1) + '\n' + entry + text.slice(marker + 1))
-console.log(`已写入 src/puzzles-data.ts：${id} ${name}`)
+const dataDir = path.resolve('data')
+const libraryFile = path.join(dataDir, 'library.json')
+fs.mkdirSync(dataDir, { recursive: true })
+let list = []
+try {
+  const raw = JSON.parse(fs.readFileSync(libraryFile, 'utf8'))
+  list = Array.isArray(raw) ? raw : Array.isArray(raw.library) ? raw.library : []
+} catch {
+  list = []
+}
+const entry = {
+  id,
+  name,
+  width,
+  height,
+  difficulty: 'custom',
+  cells,
+  savedAt: Date.now(),
+}
+const old = list.findIndex((x) => x && x.id === id)
+if (old >= 0) list[old] = entry
+else list.push(entry)
+const tmp = libraryFile + '.tmp'
+fs.writeFileSync(tmp, JSON.stringify(list, null, 2) + '\n', 'utf8')
+fs.renameSync(tmp, libraryFile)
+console.log(`已写入 data/library.json：${id} ${name}（可在侧栏编辑/删除）`)

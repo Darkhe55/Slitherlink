@@ -350,97 +350,161 @@ function toggleEdge(axis: 'h' | 'v', index: number, force?: ES) {
 
 function bindBoardEvents() {
   const board = $('#board')
-  const svg = board.querySelector('svg.board-svg') as SVGSVGElement | null
-  if (!svg) return
-
+  const initialSvg = board.querySelector('svg.board-svg') as SVGSVGElement | null
+  if (!initialSvg) return
   applyViewBox()
 
-  svg.addEventListener('contextmenu', (e) => {
-    e.preventDefault()
-  })
+  // 事件只绑定一次到持久存在的 #board；renderBoardOnly() 会替换内部 SVG。
+  if (board.dataset.interactionBound === '1') return
+  board.dataset.interactionBound = '1'
 
-  let dragging = false
-  let dragMoved = false
-  let lastClient = { x: 0, y: 0 }
-  let pendingToggle: { axis: 'h' | 'v'; index: number; force?: ES } | null = null
+  const currentSvg = (): SVGSVGElement | null =>
+    board.querySelector('svg.board-svg') as SVGSVGElement | null
 
-  const hitAt = (e: PointerEvent) => {
+  const hitAt = (e: { clientX: number; clientY: number }) => {
     if (!session) return null
+    const svg = currentSvg()
+    if (!svg) return null
     const vb = clientToViewBox(svg, e.clientX, e.clientY)
     if (!vb) return null
     const m = metricsFor(session.puzzle)
     return hitTest(m, session.puzzle, vb.x, vb.y)
   }
 
-  svg.addEventListener('wheel', (e) => {
+  let mode: 'idle' | 'pan' | 'paint' = 'idle'
+  let dragMoved = false
+  let lastClient = { x: 0, y: 0 }
+  let painting: { to: ES } | null = null
+  let painted = new Set<string>()
+  let pendingToggle: { axis: 'h' | 'v'; index: number; force?: ES } | null = null
+  let cleanup: (() => void) | null = null
+
+  board.addEventListener('contextmenu', (e) => {
     e.preventDefault()
     e.stopPropagation()
-        e.stopPropagation()
-    const vb = clientToViewBox(svg, e.clientX, e.clientY)
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12
-    setZoom(zoom * factor, vb ?? undefined)
-  }, { passive: false })
+  })
 
-  svg.addEventListener('pointerdown', (e) => {
-    resumeAudio()
-    if (e.button === 1) {
-      // 中键拖动平移（滚轮缩放后也可用）
+  board.addEventListener(
+    'wheel',
+    (e) => {
+      const target = e.target as Element | null
+      if (!target?.closest('svg.board-svg')) return
       e.preventDefault()
-      dragging = true
-      dragMoved = true
-      pendingToggle = null
-      lastClient = { x: e.clientX, y: e.clientY }
-      svg.setPointerCapture(e.pointerId)
-      return
-    }
-    if (e.button === 2) {
-      const hit = hitAt(e)
-      if (hit) toggleEdge(hit.axis, hit.index, ES.Forbidden)
-      return
-    }
-    if (e.button !== 0) return
+      e.stopPropagation()
+      const svg = currentSvg()
+      if (!svg) return
+      const vb = clientToViewBox(svg, e.clientX, e.clientY)
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12
+      setZoom(zoom * factor, vb ?? undefined)
+    },
+    { passive: false },
+  )
 
-    lastClient = { x: e.clientX, y: e.clientY }
-    dragging = true
-    dragMoved = false
-    const hit = hitAt(e)
-    pendingToggle = hit ? { axis: hit.axis, index: hit.index } : null
-    svg.setPointerCapture(e.pointerId)
-  })
+  const edgeKey = (axis: 'h' | 'v', index: number) => axis + ':' + index
 
-  svg.addEventListener('pointermove', (e) => {
-    if (!dragging) return
-    const dx = e.clientX - lastClient.x
-    const dy = e.clientY - lastClient.y
-    if (!dragMoved && Math.hypot(dx, dy) < 6) return
-    dragMoved = true
-    pendingToggle = null // 移动超过阈值 → 不算点击
-    // 屏幕位移 → viewBox 位移
-    const rect = svg.getBoundingClientRect()
-    const { w, h } = baseVB()
-    const scaleX = w / zoom / rect.width
-    const scaleY = h / zoom / rect.height
-    panX -= dx * scaleX
-    panY -= dy * scaleY
-    lastClient = { x: e.clientX, y: e.clientY }
-    applyViewBox()
-  })
-
-  const endDrag = (e: PointerEvent) => {
-    if (!dragging) return
-    dragging = false
-    try {
-      svg.releasePointerCapture(e.pointerId)
-    } catch {
-      /* ignore */
-    }
-    if (!dragMoved && pendingToggle) {
-      toggleEdge(pendingToggle.axis, pendingToggle.index)
-    }
-    pendingToggle = null
+  const paintAt = (hit: { axis: 'h' | 'v'; index: number }): boolean => {
+    if (!session || !painting) return false
+    const { width: w, height: h } = session.puzzle
+    if (isPadEdge(w, h, hit.axis, hit.index)) return false
+    const k = edgeKey(hit.axis, hit.index)
+    if (painted.has(k)) return false
+    painted.add(k)
+    const from = edgeValue(session.state, hit.axis, hit.index)
+    if (from === painting.to) return false
+    pushMove({ axis: hit.axis, index: hit.index, from, to: painting.to })
+    return true
   }
-  svg.addEventListener('pointerup', endDrag)
-  svg.addEventListener('pointercancel', endDrag)
+
+  board.addEventListener('pointerdown', (e) => {
+    const target = e.target as Element | null
+    if (!target?.closest('svg.board-svg')) return
+    if (mode !== 'idle') return
+    resumeAudio()
+    if (!session) return
+
+    const hit = e.button === 0 || e.button === 2 ? hitAt(e) : null
+    // 中键平移；左键在棋盘外空白处也能平移。左/右键落在边上时进入画线/标叉。
+    if (e.button === 1 || (e.button === 0 && !hit)) {
+      e.preventDefault()
+      mode = 'pan'
+      dragMoved = false
+      lastClient = { x: e.clientX, y: e.clientY }
+    } else {
+      if (e.button !== 0 && e.button !== 2) return
+      if (!hit) return
+      if (e.button === 2) e.preventDefault()
+      mode = 'paint'
+      dragMoved = false
+      painted = new Set<string>()
+      pendingToggle = {
+        axis: hit.axis,
+        index: hit.index,
+        force: e.button === 2 ? ES.Forbidden : undefined,
+      }
+      painting = { to: e.button === 2 ? ES.Forbidden : ES.On }
+      lastClient = { x: e.clientX, y: e.clientY }
+    }
+
+    const onMove = (ev: PointerEvent) => {
+      if (mode === 'pan') {
+        const svg = currentSvg()
+        if (!svg) return
+        const dx = ev.clientX - lastClient.x
+        const dy = ev.clientY - lastClient.y
+        const rect = svg.getBoundingClientRect()
+        const { w, h } = baseVB()
+        const scaleX = w / zoom / rect.width
+        const scaleY = h / zoom / rect.height
+        panX -= dx * scaleX
+        panY -= dy * scaleY
+        lastClient = { x: ev.clientX, y: ev.clientY }
+        applyViewBox()
+        return
+      }
+      if (mode !== 'paint') return
+      const dx = ev.clientX - lastClient.x
+      const dy = ev.clientY - lastClient.y
+      if (!dragMoved && Math.hypot(dx, dy) < 6) return
+      const wasMoved = dragMoved
+      dragMoved = true
+      // 沿指针路径采样，避免快速拖动漏掉中间的边
+      const from = wasMoved ? { x: lastClient.x, y: lastClient.y } : { x: lastClient.x, y: lastClient.y }
+      const to = { x: ev.clientX, y: ev.clientY }
+      const dist = Math.hypot(to.x - from.x, to.y - from.y)
+      const steps = Math.max(1, Math.min(48, Math.ceil(dist / 8)))
+      let changed = false
+      for (let step = 0; step <= steps; step++) {
+        const k = step / steps
+        const hit = hitAt({
+          clientX: from.x + (to.x - from.x) * k,
+          clientY: from.y + (to.y - from.y) * k,
+        })
+        if (hit && paintAt(hit)) changed = true
+      }
+      lastClient = { x: ev.clientX, y: ev.clientY }
+      if (changed) refresh()
+    }
+
+    const onUp = () => {
+      cleanup?.()
+    }
+
+    cleanup = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      cleanup = null
+      if (mode === 'paint' && !dragMoved && pendingToggle) {
+        toggleEdge(pendingToggle.axis, pendingToggle.index, pendingToggle.force)
+      }
+      mode = 'idle'
+      painting = null
+      pendingToggle = null
+    }
+    window.addEventListener('pointermove', onMove, { passive: false })
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  })
 }
 
 function undo() {
