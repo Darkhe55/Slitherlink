@@ -122,7 +122,13 @@ function neighborPairs(w: number, h: number) {
  * 坍缩：细化色号 + Off 同化 + On 异色 + 外圈播种，迭代到不动点。
  * 之后应用空腔规则。
  */
-export function collapseColors(puzzle: Puzzle, state: GameState): CollapseResult {
+export function collapseColors(
+  puzzle: Puzzle,
+  state: GameState,
+  soundOnly = false,
+  useCavities = !soundOnly,
+  useBridge = !soundOnly,
+): CollapseResult {
   const w = puzzle.width
   const h = puzzle.height
   const nCols = w + 2
@@ -251,26 +257,30 @@ export function collapseColors(puzzle: Puzzle, state: GameState): CollapseResult
     }
 
     // —— 空腔规则 ——
-    const cav = applyCavities(w, h, mark, fixed, state)
-    if (cav.conflict) conflict = true
-    if (cav.forced.length) {
-      changed = true
-      for (const f of cav.forced) {
-        forced.push(f)
-        mark[f.i] = f.to
-        fixed[f.i] = true
+    // soundOnly 时只保留“Off 同色 + On 异色”的可证明传播，避免启发式规则误报。
+    if (useCavities) {
+      const cav = applyCavities(w, h, mark, fixed, state)
+      if (cav.conflict) conflict = true
+      if (cav.forced.length) {
+        changed = true
+        for (const f of cav.forced) {
+          forced.push(f)
+          mark[f.i] = f.to
+          fixed[f.i] = true
+        }
       }
     }
-
-    // —— 窄桥规则：色2 多分支间的 1 格宽瓶颈 ——
-    const bridge = applyNarrowBridge(w, h, mark, state)
-    if (bridge.conflict) conflict = true
-    if (bridge.forced.length) {
-      changed = true
-      for (const f of bridge.forced) {
-        forced.push(f)
-        mark[f.i] = f.to
-        fixed[f.i] = true
+    if (useBridge) {
+      // —— 窄桥规则：色2 多分支间的 1 格宽瓶颈 ——
+      const bridge = applyNarrowBridge(w, h, mark, state)
+      if (bridge.conflict) conflict = true
+      if (bridge.forced.length) {
+        changed = true
+        for (const f of bridge.forced) {
+          forced.push(f)
+          mark[f.i] = f.to
+          fixed[f.i] = true
+        }
       }
     }
 
@@ -612,12 +622,15 @@ export function probeEdge(
   axis: 'h' | 'v',
   index: number,
   to: EdgeState,
+  soundOnly = false,
+  useCavities = !soundOnly,
+  useBridge = !soundOnly,
 ): { ok: boolean; reason?: string } {
   const old = edgeValue(state, axis, index)
   if (axis === 'h') state.h[index] = to
   else state.v[index] = to
 
-  const a = collapseColors(puzzle, state)
+  const a = collapseColors(puzzle, state, soundOnly, useCavities, useBridge)
   let completes = false
   if (!a.conflict) {
     // 成环才看是否完整解

@@ -1320,6 +1320,9 @@ export function planLogicSolve(
   }
 
   const applyRule7 = () => {
+    // 内置题有参考解可复核，沿用完整染色启发式；导入/自定义题改用可证明的 soundOnly，
+    // 避免染色启发式误报导致成片标叉。
+    const heuristicOk = !puzzle.id.startsWith('custom-') && !puzzle.id.startsWith('img-')
     const real: Side[] = []
     for (let hy = 0; hy <= h; hy++) {
       for (let hx = 1; hx <= w; hx++) {
@@ -1337,7 +1340,7 @@ export function planLogicSolve(
       const cur = edgeValue(work, s.axis, s.index)
       if (cur !== ES.Unknown) continue
 
-      const probeOn = probeEdge(puzzle, work, s.axis, s.index, ES.On)
+      const probeOn = probeEdge(puzzle, work, s.axis, s.index, ES.On, !heuristicOk)
       if (!probeOn.ok) {
         const acc: LogicChange[] = []
         trySet(s.axis, s.index, ES.Forbidden, acc)
@@ -1347,9 +1350,9 @@ export function planLogicSolve(
         continue
       }
 
-      const probeOff = probeEdge(puzzle, work, s.axis, s.index, ES.Forbidden)
+      const probeOff = probeEdge(puzzle, work, s.axis, s.index, ES.Forbidden, !heuristicOk)
       if (!probeOff.ok) {
-        const probeOn2 = probeEdge(puzzle, work, s.axis, s.index, ES.On)
+        const probeOn2 = probeEdge(puzzle, work, s.axis, s.index, ES.On, !heuristicOk)
         if (probeOn2.ok) {
           const acc: LogicChange[] = []
           trySet(s.axis, s.index, ES.On, acc)
