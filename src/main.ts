@@ -374,6 +374,8 @@ function bindBoardEvents() {
 
   svg.addEventListener('wheel', (e) => {
     e.preventDefault()
+    e.stopPropagation()
+        e.stopPropagation()
     const vb = clientToViewBox(svg, e.clientX, e.clientY)
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12
     setZoom(zoom * factor, vb ?? undefined)
@@ -381,6 +383,16 @@ function bindBoardEvents() {
 
   svg.addEventListener('pointerdown', (e) => {
     resumeAudio()
+    if (e.button === 1) {
+      // 中键拖动平移（滚轮缩放后也可用）
+      e.preventDefault()
+      dragging = true
+      dragMoved = true
+      pendingToggle = null
+      lastClient = { x: e.clientX, y: e.clientY }
+      svg.setPointerCapture(e.pointerId)
+      return
+    }
     if (e.button === 2) {
       const hit = hitAt(e)
       if (hit) toggleEdge(hit.axis, hit.index, ES.Forbidden)

@@ -302,6 +302,7 @@ button.btn:disabled {
 
 #board {
   overflow: hidden;
+  overscroll-behavior: contain;
   cursor: grab;
   touch-action: none;
 }
