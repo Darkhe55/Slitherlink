@@ -374,7 +374,7 @@ function bindBoardEvents() {
   let mode: 'idle' | 'pan' | 'paint' = 'idle'
   let dragMoved = false
   let lastClient = { x: 0, y: 0 }
-  let painting: { to: ES } | null = null
+  let painting: { from: ES; to: ES } | null = null
   let painted = new Set<string>()
   let pendingToggle: { axis: 'h' | 'v'; index: number; force?: ES } | null = null
   let cleanup: (() => void) | null = null
@@ -410,7 +410,8 @@ function bindBoardEvents() {
     if (painted.has(k)) return false
     painted.add(k)
     const from = edgeValue(session.state, hit.axis, hit.index)
-    if (from === painting.to) return false
+    // 一次拖动只影响起手时的“源类型”：首次 a→b 锁定后，后续只改仍是 a 的边
+    if (painting.from !== from || painting.to === from) return false
     pushMove({ axis: hit.axis, index: hit.index, from, to: painting.to })
     return true
   }
@@ -436,12 +437,21 @@ function bindBoardEvents() {
       mode = 'paint'
       dragMoved = false
       painted = new Set<string>()
+      const from = edgeValue(session.state, hit.axis, hit.index)
+      const to =
+        e.button === 2
+          ? from === ES.Unknown
+            ? ES.Forbidden
+            : from === ES.On
+              ? ES.Unknown
+              : ES.Forbidden
+          : cycleEdge(from)
       pendingToggle = {
         axis: hit.axis,
         index: hit.index,
-        force: e.button === 2 ? ES.Forbidden : undefined,
+        force: e.button === 2 ? to : undefined,
       }
-      painting = { to: e.button === 2 ? ES.Forbidden : ES.On }
+      painting = { from, to }
       lastClient = { x: e.clientX, y: e.clientY }
     }
 
