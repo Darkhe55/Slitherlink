@@ -129,7 +129,7 @@ app.innerHTML = `
 
       <div class="legend">
         <div><kbd>点击</kbd> 切换边状态</div>
-        <div><kbd>右键</kbd> 直接标 × · <kbd>拖拽</kbd> 平移画布</div>
+        <div><kbd>左键</kbd> 空/×→线、线→空 · <kbd>右键</kbd> 空/线→×、×→空 · <kbd>拖拽</kbd> 锁定首次转换 · <kbd>中键</kbd> 平移</div>
         <div><kbd>滚轮</kbd> 缩放 · <kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> 放大/缩小/复位</div>
         <div><kbd>Z</kbd> / <kbd>Shift+Z</kbd> 撤销 / 重做</div>
         <div><kbd>C</kbd> 检查 · <kbd>Esc</kbd> 清空 · <kbd>L</kbd> 逻辑解题/停止回放 · <kbd>P</kbd> 暂停/继续</div>
@@ -337,6 +337,16 @@ function pushMove(move: Move) {
   saveState(session)
 }
 
+function leftEdgeTo(from: ES): ES {
+  // 左键：空格/叉 → 线；线 → 空（正面循环：空、线）
+  return from === ES.On ? ES.Unknown : ES.On
+}
+
+function rightEdgeTo(from: ES): ES {
+  // 右键：空格/线 → 叉；叉 → 空（负面循环：空、叉）
+  return from === ES.Forbidden ? ES.Unknown : ES.Forbidden
+}
+
 function toggleEdge(axis: 'h' | 'v', index: number, force?: ES) {
   if (!session) return
   const { width: w, height: h } = session.puzzle
@@ -438,18 +448,11 @@ function bindBoardEvents() {
       dragMoved = false
       painted = new Set<string>()
       const from = edgeValue(session.state, hit.axis, hit.index)
-      const to =
-        e.button === 2
-          ? from === ES.Unknown
-            ? ES.Forbidden
-            : from === ES.On
-              ? ES.Unknown
-              : ES.Forbidden
-          : cycleEdge(from)
+      const to = e.button === 2 ? rightEdgeTo(from) : leftEdgeTo(from)
       pendingToggle = {
         axis: hit.axis,
         index: hit.index,
-        force: e.button === 2 ? to : undefined,
+        force: to,
       }
       painting = { from, to }
       lastClient = { x: e.clientX, y: e.clientY }
