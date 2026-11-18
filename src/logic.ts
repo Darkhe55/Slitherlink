@@ -579,7 +579,7 @@ export function planLogicSolve(
               trySet(farOuter[0]!.axis, farOuter[0]!.index, ES.Forbidden, acc)
             }
             if (acc.length) {
-              flush(4, `规则4C：2角(${fpx},${fpy}) 外边一环 → 另一外边排除`, acc)
+              flush(4, `规则4C：2格(${x2},${y2}) 远角(${fpx},${fpy}) 外边一环 → 另一外边排除`, acc)
             }
           }
           {
@@ -592,7 +592,7 @@ export function planLogicSolve(
               trySet(farInner[0]!.axis, farInner[0]!.index, ES.On, acc)
             }
             if (acc.length) {
-              flush(4, `规则4C：2角(${fpx},${fpy}) 内边一叉 → 另一内边落环`, acc)
+              flush(4, `规则4C：2格(${x2},${y2}) 远角(${fpx},${fpy}) 内边一叉 → 另一内边落环`, acc)
             }
           }
 
