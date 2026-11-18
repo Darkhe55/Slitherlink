@@ -224,6 +224,69 @@ function realEdges(w: number, h: number) {
   return edges
 }
 
+/**
+ * 在已有边约束下判断是否还有完整解；用于规则8的精确复核。
+ * 已知边固定，只对 Unknown 边分支。
+ */
+export function hasSolutionFromState(
+  puzzle: Puzzle,
+  initial: GameState,
+  maxNodes = 20_000,
+): { ok: boolean; timedOut: boolean } {
+  const w = puzzle.width
+  const h = puzzle.height
+  const state = cloneState(initial)
+  const edges = realEdges(w, h).filter(
+    (e) => edgeValue(state, e.axis, e.index) === ES.Unknown,
+  )
+  let nodes = 0
+  let timedOut = false
+  let found = false
+
+  const cellsOk = () => {
+    for (let cy = 0; cy < h; cy++) {
+      for (let cx = 0; cx < w; cx++) {
+        if (!cellSatisfied(state, w, cx, cy, puzzle.cells[cy * w + cx] ?? null)) return false
+      }
+    }
+    return true
+  }
+  const vertsOk = () => {
+    for (let py = 0; py <= h; py++) {
+      for (let px = 0; px <= w; px++) {
+        if (!vertexOk(state, w, px, py)) return false
+      }
+    }
+    return true
+  }
+
+  const dfs = (i: number): boolean => {
+    if (timedOut) return false
+    if (nodes++ > maxNodes) {
+      timedOut = true
+      return false
+    }
+    if (i === edges.length) {
+      if (cellsOk() && vertsOk()) {
+        found = true
+        return true
+      }
+      return false
+    }
+    const { axis, index } = edges[i]!
+    for (const val of [ES.On, ES.Forbidden] as const) {
+      setEdge(state, axis, index, val)
+      if (cellsOk() && vertsOk() && dfs(i + 1)) return true
+    }
+    setEdge(state, axis, index, ES.Unknown)
+    return false
+  }
+
+  if (!cellsOk() || !vertsOk()) return { ok: false, timedOut: false }
+  dfs(0)
+  return { ok: found, timedOut }
+}
+
 /** 找一个解 */
 export function solvePuzzle(puzzle: Puzzle, maxNodes = 400_000): SolveResult {
   const w = puzzle.width

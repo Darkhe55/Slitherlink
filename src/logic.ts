@@ -8,6 +8,7 @@ import {
   vertexEdges,
 } from './state'
 import type { Axis, CellNumber, EdgeState, GameState, Puzzle } from './types'
+import { hasSolutionFromState } from './solver'
 import { EdgeState as ES } from './types'
 import { probeEdge } from './coloring'
 
@@ -1320,13 +1321,11 @@ export function planLogicSolve(
   }
 
   const applyRule7 = () => {
-    // 只有内置题（有参考解/唯一解审计）才使用完整染色启发式；
-    // custom 题（含旧导入题，id 可能不是 custom-/img- 前缀）一律用可证明的 soundOnly，
-    // 避免空腔/窄桥启发式在未经审计的题面上误报成片标叉。
+    // 规则8的染色冲突检测依赖空腔/窄桥启发式，不能直接当作“无解”证明。
+    // 内置题有参考解/唯一解审计，沿用完整启发式；
+    // 自定义/导入题只在大盘面关闭规则8、小盘面用精确求解复核后才允许落子。
     const heuristicOk = puzzle.difficulty !== 'custom'
-    // 自定义/导入题不做规则8：空腔/窄桥启发式无法证明，OCR 题面也可能有误；
-    // 一旦误报会成片标叉。自定义题只靠其他可证明规则与反证。
-    if (!heuristicOk) return
+
     const real: Side[] = []
     for (let hy = 0; hy <= h; hy++) {
       for (let hx = 1; hx <= w; hx++) {
@@ -1339,29 +1338,51 @@ export function planLogicSolve(
       }
     }
 
+    // 大盘自定义题做精确复核代价过高，直接跳过规则8，避免误报/卡顿。
+    if (!heuristicOk && real.length > 500) return
+
+    const exactNoSolution = (axis: Axis, index: number, to: EdgeState): boolean => {
+      const test = { ...work, h: work.h.slice(), v: work.v.slice() }
+      setEdge(test, axis, index, to)
+      const r = hasSolutionFromState(puzzle, test, heuristicOk ? 20_000 : 8_000)
+      return !r.timedOut && !r.ok
+    }
+
     for (const s of real) {
       if (isEdgeMasked(masks, s.axis, s.index)) continue
       const cur = edgeValue(work, s.axis, s.index)
       if (cur !== ES.Unknown) continue
 
-      const probeOn = probeEdge(puzzle, work, s.axis, s.index, ES.On, !heuristicOk)
+      const probeOn = probeEdge(puzzle, work, s.axis, s.index, ES.On)
       if (!probeOn.ok) {
-        const acc: LogicChange[] = []
-        trySet(s.axis, s.index, ES.Forbidden, acc)
-        if (acc.length) {
-          flush(8, `规则8：落环会染色坍缩冲突 → 排除`, acc)
+        if (heuristicOk || exactNoSolution(s.axis, s.index, ES.On)) {
+          const acc: LogicChange[] = []
+          trySet(s.axis, s.index, ES.Forbidden, acc)
+          if (acc.length) {
+            flush(8, heuristicOk
+              ? `规则8：落环会染色坍缩冲突 → 排除`
+              : `规则8：精确复核落环无解 → 排除`, acc)
+          }
+          continue
         }
-        continue
       }
 
-      const probeOff = probeEdge(puzzle, work, s.axis, s.index, ES.Forbidden, !heuristicOk)
+      const probeOff = probeEdge(puzzle, work, s.axis, s.index, ES.Forbidden)
       if (!probeOff.ok) {
-        const probeOn2 = probeEdge(puzzle, work, s.axis, s.index, ES.On, !heuristicOk)
-        if (probeOn2.ok) {
+        if (heuristicOk) {
+          const probeOn2 = probeEdge(puzzle, work, s.axis, s.index, ES.On)
+          if (probeOn2.ok) {
+            const acc: LogicChange[] = []
+            trySet(s.axis, s.index, ES.On, acc)
+            if (acc.length) {
+              flush(8, `规则8：排除会染色坍缩冲突 → 落环`, acc)
+            }
+          }
+        } else if (exactNoSolution(s.axis, s.index, ES.Forbidden)) {
           const acc: LogicChange[] = []
           trySet(s.axis, s.index, ES.On, acc)
           if (acc.length) {
-            flush(8, `规则8：排除会染色坍缩冲突 → 落环`, acc)
+            flush(8, `规则8：精确复核排除无解 → 落环`, acc)
           }
         }
       }
