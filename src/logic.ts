@@ -972,37 +972,80 @@ export function planLogicSolve(
     }
     if (!cycleEdge) return
 
-    // 出现环：合法的唯一可能是「On 边恰好组成这一个环」（每个端点度数 2、只有一个连通分量）
-    const deg = new Map<number, number>()
-    for (const s of onEdges) {
-      let a: number
-      let b: number
+    // 出现环：这个 On 环只能就是最终解环；环外的未知边必须全部排除。
+    // 即使环外还挂着已定的开口链（说明当前状态已矛盾），环外未知边仍然不可能是解的一部分。
+    const endpoints = (s: Side): [number, number] => {
       if (s.axis === 'h') {
         const hy = Math.floor(s.index / hWidth(w))
         const hx = s.index % hWidth(w)
-        a = hy * (w + 1) + (hx - 1)
-        b = hy * (w + 1) + hx
-      } else {
-        const vy = Math.floor(s.index / (w + 1))
-        const vx = s.index % (w + 1)
-        a = (vy - 1) * (w + 1) + vx
-        b = vy * (w + 1) + vx
+        return [hy * (w + 1) + (hx - 1), hy * (w + 1) + hx]
       }
+      const vy = Math.floor(s.index / (w + 1))
+      const vx = s.index % (w + 1)
+      return [(vy - 1) * (w + 1) + vx, vy * (w + 1) + vx]
+    }
+    const keyOf = (s: Side) => `${s.axis}:${s.index}`
+    const other = (s: Side, v: number): number => {
+      const [a, b] = endpoints(s)
+      return a === v ? b : a
+    }
+
+    const adj = new Map<number, Side[]>()
+    const addAdj = (v: number, s: Side) => {
+      const list = adj.get(v)
+      if (list) list.push(s)
+      else adj.set(v, [s])
+    }
+    for (const s of onEdges) {
+      const [a, b] = endpoints(s)
+      addAdj(a, s)
+      addAdj(b, s)
+    }
+
+    const [ca, cb] = endpoints(cycleEdge)
+    const prev = new Map<number, Side>()
+    const seen = new Set<number>([ca])
+    const stack = [ca]
+    while (stack.length && !prev.has(cb)) {
+      const v = stack.pop()!
+      for (const e of adj.get(v) ?? []) {
+        if (e.axis === cycleEdge.axis && e.index === cycleEdge.index) continue
+        const nx = other(e, v)
+        if (seen.has(nx)) continue
+        seen.add(nx)
+        prev.set(nx, e)
+        stack.push(nx)
+      }
+    }
+    if (!prev.has(cb)) return
+    const cycleKeys = new Set<string>([keyOf(cycleEdge)])
+    let cur = cb
+    while (cur !== ca) {
+      const e = prev.get(cur)
+      if (!e) return
+      cycleKeys.add(keyOf(e))
+      cur = other(e, cur)
+    }
+
+    const deg = new Map<number, number>()
+    for (const s of onEdges) {
+      const [a, b] = endpoints(s)
       deg.set(a, (deg.get(a) ?? 0) + 1)
       deg.set(b, (deg.get(b) ?? 0) + 1)
     }
     const allDeg2 = [...deg.values()].every((d) => d === 2)
-    const singleComponent = onEdges.length === usedVertex.size
-    // 环边没组成「干净的单环」时不做结论（可能只是中间状态的链，交给其它规则/前瞻）
-    if (!allDeg2 || !singleComponent) return
+    const cleanSingleCycle = allDeg2 && cycleKeys.size === onEdges.length
 
-    // 已经是完整单环：其余未定边全部排除
+    // 环外未知边全部排除；已 On 的环外边保留，交给后续冲突/校验暴露矛盾。
     const acc: LogicChange[] = []
     for (const s of real) {
+      if (cycleKeys.has(keyOf(s))) continue
       trySet(s.axis, s.index, ES.Forbidden, acc)
     }
     if (acc.length) {
-      flush(12, `规则12：已确定的环边自身闭合成环（单环）→ 其余边全部排除`, acc)
+      flush(12, cleanSingleCycle
+        ? `规则12：已确定的环边自身闭合成环（单环）→ 其余边全部排除`
+        : `规则12：已出现闭合环 → 环外未知边全部排除`, acc)
     }
   }
 
