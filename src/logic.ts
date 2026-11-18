@@ -1770,7 +1770,9 @@ export function planLogicSolve(
       }
       return false
     }
-    for (const c of cands) {
+    // 规则11每个候选都会复制整块 h/v 并跑一遍传播；大棋盘上逐一遍历会产生大量短命数组，
+    // 造成明显堆膨胀。候选已按约束紧度排序，只取最靠前的 64 个，足够覆盖常见破局点。
+    for (const c of cands.slice(0, 64)) {
       if (probe(c.axis, c.index)) return
     }
   }
