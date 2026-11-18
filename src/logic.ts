@@ -1320,9 +1320,13 @@ export function planLogicSolve(
   }
 
   const applyRule7 = () => {
-    // 内置题有参考解可复核，沿用完整染色启发式；导入/自定义题改用可证明的 soundOnly，
-    // 避免染色启发式误报导致成片标叉。
-    const heuristicOk = !puzzle.id.startsWith('custom-') && !puzzle.id.startsWith('img-')
+    // 只有内置题（有参考解/唯一解审计）才使用完整染色启发式；
+    // custom 题（含旧导入题，id 可能不是 custom-/img- 前缀）一律用可证明的 soundOnly，
+    // 避免空腔/窄桥启发式在未经审计的题面上误报成片标叉。
+    const heuristicOk = puzzle.difficulty !== 'custom'
+    // 自定义/导入题不做规则8：空腔/窄桥启发式无法证明，OCR 题面也可能有误；
+    // 一旦误报会成片标叉。自定义题只靠其他可证明规则与反证。
+    if (!heuristicOk) return
     const real: Side[] = []
     for (let hy = 0; hy <= h; hy++) {
       for (let hx = 1; hx <= w; hx++) {
