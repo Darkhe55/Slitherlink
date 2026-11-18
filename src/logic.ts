@@ -10,7 +10,7 @@ import {
 import type { Axis, CellNumber, EdgeState, GameState, Puzzle } from './types'
 import { hasSolutionFromState } from './solver'
 import { EdgeState as ES } from './types'
-import { probeEdge } from './coloring'
+import { collapseColors, padIndex, probeEdge } from './coloring'
 
 export interface LogicChange {
   axis: Axis
@@ -1049,6 +1049,152 @@ export function planLogicSolve(
     }
   }
 
+  /**
+   * 规则12B：补一条边会形成“局部环”，但环外已有其它 On 边。
+   * 单环解中任何闭合环都只能是最终解环，因此补边后若环外仍有环边，
+   * 这条补边不可能为 On，只能是叉。
+   */
+  const applyRule12b = () => {
+    const real: Side[] = []
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) real.push({ axis: 'h', index: hIndex(w, hx, hy) })
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) real.push({ axis: 'v', index: vIndex(w, vx, vy) })
+    }
+
+    const endpoints = (s: Side): [number, number] => {
+      if (s.axis === 'h') {
+        const hy = Math.floor(s.index / hWidth(w))
+        const hx = s.index % hWidth(w)
+        return [hy * (w + 1) + (hx - 1), hy * (w + 1) + hx]
+      }
+      const vy = Math.floor(s.index / (w + 1))
+      const vx = s.index % (w + 1)
+      return [(vy - 1) * (w + 1) + vx, vy * (w + 1) + vx]
+    }
+    const keyOf = (s: Side) => `${s.axis}:${s.index}`
+    const other = (s: Side, v: number): number => {
+      const [a, b] = endpoints(s)
+      return a === v ? b : a
+    }
+
+    const onEdges: Side[] = []
+    const adj = new Map<number, Side[]>()
+    const deg = new Map<number, number>()
+    const vCount = (w + 1) * (h + 1)
+    const uf = new Int32Array(vCount)
+    for (let i = 0; i < vCount; i++) uf[i] = i
+    const find = (x: number): number => {
+      let r = x
+      while (uf[r] !== r) r = uf[r]!
+      while (uf[x] !== r) {
+        const nx = uf[x]!
+        uf[x] = r
+        x = nx
+      }
+      return r
+    }
+    for (const s of real) {
+      if (edgeValue(work, s.axis, s.index) !== ES.On) continue
+      onEdges.push(s)
+      const [a, b] = endpoints(s)
+      deg.set(a, (deg.get(a) ?? 0) + 1)
+      deg.set(b, (deg.get(b) ?? 0) + 1)
+      const ra = find(a)
+      const rb = find(b)
+      if (ra !== rb) uf[ra] = rb
+      const la = adj.get(a)
+      if (la) la.push(s)
+      else adj.set(a, [s])
+      const lb = adj.get(b)
+      if (lb) lb.push(s)
+      else adj.set(b, [s])
+    }
+    if (!onEdges.length) return
+
+    const acc: LogicChange[] = []
+    for (const s of real) {
+      if (edgeValue(work, s.axis, s.index) !== ES.Unknown) continue
+      const [a, b] = endpoints(s)
+      if (a === b) continue
+      if (find(a) !== find(b)) continue
+
+      // 找当前 On 图中 a→b 的路径；找不到说明补边不会成环
+      const prev = new Map<number, Side>()
+      const seen = new Set<number>([a])
+      const queue = [a]
+      while (queue.length && !prev.has(b)) {
+        const v = queue.shift()!
+        for (const e of adj.get(v) ?? []) {
+          const nx = other(e, v)
+          if (seen.has(nx)) continue
+          seen.add(nx)
+          prev.set(nx, e)
+          queue.push(nx)
+        }
+      }
+      if (!prev.has(b)) continue
+
+      const cycleKeys = new Set<string>([keyOf(s)])
+      let cur = b
+      while (cur !== a) {
+        const e = prev.get(cur)
+        if (!e) break
+        cycleKeys.add(keyOf(e))
+        cur = other(e, cur)
+      }
+      if (cur !== a) continue
+
+      const outsideOn = onEdges.some((e) => !cycleKeys.has(keyOf(e)))
+      const badDegree = (deg.get(a) ?? 0) !== 1 || (deg.get(b) ?? 0) !== 1
+      if (outsideOn || badDegree) trySet(s.axis, s.index, ES.Forbidden, acc)
+    }
+    if (acc.length) {
+      flush(12, `规则12B：补边会形成局部环且环外已有环边 → 该边排除`, acc)
+    }
+  }
+
+  /**
+   * 规则4D：基础染色（Off 同色 / On 异色）已经确定两格颜色时，
+   * 中间边必须按同色→叉、异色→环 填充。只使用可证明的 soundOnly 染色。
+   */
+  const applyColorEdges = () => {
+    const colors = collapseColors(puzzle, work, true)
+    if (colors.conflict) return
+    const colorAt = (pcx: number, pcy: number): number => colors.mark[padIndex(w, pcx, pcy)] ?? 0
+    const real: Side[] = []
+    for (let hy = 0; hy <= h; hy++) {
+      for (let hx = 1; hx <= w; hx++) real.push({ axis: 'h', index: hIndex(w, hx, hy) })
+    }
+    for (let vy = 1; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) real.push({ axis: 'v', index: vIndex(w, vx, vy) })
+    }
+    const acc: LogicChange[] = []
+    for (const s of real) {
+      if (edgeValue(work, s.axis, s.index) !== ES.Unknown) continue
+      let c1: number
+      let c2: number
+      if (s.axis === 'h') {
+        const hy = Math.floor(s.index / hWidth(w))
+        const hx = s.index % hWidth(w)
+        c1 = colorAt(hx, hy)
+        c2 = colorAt(hx, hy + 1)
+      } else {
+        const vy = Math.floor(s.index / (w + 1))
+        const vx = s.index % (w + 1)
+        c1 = colorAt(vx, vy)
+        c2 = colorAt(vx + 1, vy)
+      }
+      if ((c1 !== 1 && c1 !== 2) || (c2 !== 1 && c2 !== 2)) continue
+      trySet(s.axis, s.index, c1 === c2 ? ES.Forbidden : ES.On, acc)
+    }
+    if (acc.length) {
+      const onCount = acc.filter((c) => c.to === ES.On).length
+      flush(4, `规则4D：染色已定，同色边排除 / 异色边落环（落环 ${onCount}，排除 ${acc.length - onCount}）`, acc)
+    }
+  }
+
   // —— 规则13：对角 0-3 ——
   /**
    * 规则13：数字 0 与数字 3 斜对角相邻（共用一个顶点）。
@@ -1834,6 +1980,8 @@ export function planLogicSolve(
     applyRule6()
     applyRule9()
     applyRule12()
+    applyRule12b()
+    applyColorEdges()
     applyRule13()
     applyRule14()
     applyRule15()
