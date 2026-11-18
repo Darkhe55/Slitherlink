@@ -839,9 +839,11 @@ export function planLogicSolve(
    * 可证明的结论（对任意单环解都成立）：
    *   - 两条「外向」边（共享边延长线，即两个端点上不属于这两格的那条边）都排除；
    *   - 两格的「外侧对边」（A.left / B.right 或 A.top / B.bottom）都在环上。
-   * 反例说明「共享边一定在环上」不成立：2×1 骨牌本身就是合法单环，
-   * 此时两格都数 3、共享边为叉。因此规则7 不再推断共享边。
-   * （骨牌闭环由规则12「环路闭合」处理：闭环后其余边全叉。）
+   * 共享边：
+   *   - 若盘面已存在 2×1 六条边界之外的 On 边，则共享边必定在环上；否则六条边界
+   *     会闭成 2×1 单环，不可能再有外部 On 边。
+   *   - 若没有外部 On 边，共享边暂时待定；真为叉时规则12 会在六条边界闭环后收尾。
+   * 因此不能无条件说共享边一定在环上。
    */
   const applyRule6 = () => {
     const seen = new Set<string>()
@@ -857,6 +859,28 @@ export function planLogicSolve(
       } else {
         trySet('h', g.a.top, ES.On, acc)
         trySet('h', g.b.bottom, ES.On, acc)
+      }
+      // 规则7b：共享边若为叉，则六条外边界边全为环，形成封闭的 2×1 小环；
+      // 单环解此时不允许再有其它 On 边。因此盘面已存在“2×1 边界之外”的 On 边时，
+      // 共享边必定为环；没有外部 On 边则继续待定。
+      if (edgeValue(work, g.shared.axis, g.shared.index) === ES.Unknown) {
+        const boundary = new Set<string>()
+        for (const s of [
+          { axis: "h" as Axis, index: g.a.top },
+          { axis: "h" as Axis, index: g.a.bottom },
+          { axis: "v" as Axis, index: g.a.left },
+          { axis: "h" as Axis, index: g.b.top },
+          { axis: "h" as Axis, index: g.b.bottom },
+          { axis: "v" as Axis, index: g.b.right },
+        ]) boundary.add(`${s.axis}:${s.index}`)
+        let outsideOn = false
+        for (let i = 0; i < work.h.length && !outsideOn; i++) {
+          if (work.h[i] === ES.On && !boundary.has(`h:${i}`)) outsideOn = true
+        }
+        for (let i = 0; i < work.v.length && !outsideOn; i++) {
+          if (work.v[i] === ES.On && !boundary.has(`v:${i}`)) outsideOn = true
+        }
+        if (outsideOn) trySet(g.shared.axis, g.shared.index, ES.On, acc)
       }
       if (acc.length) {
         flush(7, `规则7：双3 外向× + 各自外侧对边落环（共享边不定）`, acc)
