@@ -134,6 +134,7 @@ app.innerHTML = `
           <input type="number" id="logic-step" min="0" max="0" step="1" value="0" aria-label="跳转步数" />
           <span>/ <b id="logic-total">0</b> 步</span>
           <button class="btn" id="logic-jump-btn" type="button">跳转</button>
+          <button class="btn" id="logic-pause-btn" type="button">暂停</button>
         </div>
       </div>
 
@@ -757,15 +758,64 @@ function updateLogicButton() {
   }
 }
 
-/** 暂停/继续回放（快捷键 P）；不在回放中时无效 */
+function updateLogicPauseButton(): void {
+  const btn = document.getElementById('logic-pause-btn') as HTMLButtonElement | null
+  if (!btn) return
+  if (!logicFrames.length || !logicBase) {
+    btn.disabled = true
+    btn.textContent = '暂停'
+    return
+  }
+  btn.disabled = false
+  if (logicPlaying) btn.textContent = logicPaused ? '继续' : '暂停'
+  else if (logicFrame >= logicTotal) btn.textContent = '重播'
+  else btn.textContent = '继续'
+}
+
+/** 暂停/继续回放（快捷键 P）；回放结束后可从头重播。 */
 function toggleLogicPause() {
-  if (!logicPlaying) return
+  if (!logicPlaying) {
+    if (!logicFrames.length || !logicBase) return
+    if (!session || session.puzzle.id !== logicPuzzleId) return
+    // 结束后再次点击：从头重播；暂停在中间则从当前帧继续
+    if (logicFrame >= logicTotal) rebuildLogicState(0)
+    logicPlaying = true
+    logicPaused = false
+    logicToken++
+    const token = logicToken
+    setButtonsDisabled(true)
+    updateLogicButton()
+    updateLogicPauseButton()
+    setStatus(`回放继续 [${logicFrame}/${logicTotal}]…`, 'solving')
+    void playLogicPlan(
+      { puzzleId: logicPuzzleId, frames: logicFrames },
+      logicPuzzleId,
+      token,
+    ).then(() => finishLogicPlayback(logicTotal, token))
+    return
+  }
   logicPaused = !logicPaused
+  updateLogicPauseButton()
   if (logicPaused) {
-    setStatus(`回放已暂停 [${logicFrame}/${logicTotal}] · 按 P 或点“逻辑解题”外的操作继续`, 'solving')
+    setStatus(`回放已暂停 [${logicFrame}/${logicTotal}] · 可拖动进度或点“继续”恢复`, 'solving')
   } else {
     setStatus(`回放继续 [${logicFrame}/${logicTotal}]…`, 'solving')
   }
+}
+
+function finishLogicPlayback(total: number, token: number): void {
+  if (token !== logicToken) return
+  logicPlaying = false
+  logicPaused = false
+  setButtonsDisabled(false)
+  updateLogicButton()
+  updateLogicPauseButton()
+  updateLogicProgress()
+  if (!session || session.puzzle.id !== logicPuzzleId) return
+  renderBoardOnly(currentColorGrid())
+  const result = currentResult()
+  if (result?.solved) setStatus('逻辑解题完成，盘面已解出。', 'ok')
+  else setStatus(`回放完毕（${total} 帧，染色已叠加）。`, 'ok')
 }
 
 function edgeMidVB(axis: 'h' | 'v', index: number) {
@@ -960,8 +1010,16 @@ function seekLogicFrame(n: number): void {
   const step = document.getElementById('logic-step') as HTMLInputElement | null
   if (slider) slider.value = String(target)
   if (step) step.value = String(target)
-  if (!logicPlaying || logicPaused) applyLogicSeek()
-  else setStatus(`回放跳转中… → 第 ${target}/${logicTotal} 步`, 'solving')
+  // 立即重建到目标帧，保证“跳转后马上暂停”也能停在该位置
+  applyLogicSeek()
+  updateLogicPauseButton()
+  if (logicPlaying && !logicPaused) {
+    setStatus(`已定位到第 ${target}/${logicTotal} 步，继续回放…`, 'solving')
+  } else if (logicPaused) {
+    setStatus(`回放已暂停在第 ${target}/${logicTotal} 步。`, 'solving')
+  } else {
+    setStatus(`回放已定位到第 ${target}/${logicTotal} 步。`, 'ok')
+  }
 }
 
 function bindLogicProgress(): void {
@@ -977,6 +1035,7 @@ function bindLogicProgress(): void {
     }
   })
   jump.addEventListener('click', () => seekLogicFrame(Number(step.value)))
+  document.getElementById('logic-pause-btn')?.addEventListener('click', toggleLogicPause)
 }
 
 /**
@@ -1077,6 +1136,7 @@ async function runLogicSolver() {
   logicFrame = 0
   logicSeekTarget = null
   showLogicProgress()
+  updateLogicPauseButton()
   setStatus(
     `推理完成：${plan.frames.length} 帧 / ${plan.ruleSteps} 条规则步，开始回放…`,
     'solving',
@@ -1093,20 +1153,7 @@ async function runLogicSolver() {
     /* ignore */
   }
 
-  if (token === logicToken) {
-    logicPlaying = false
-    logicPaused = false
-    setButtonsDisabled(false)
-    updateLogicButton()
-    updateLogicProgress()
-    if (session && session.puzzle.id === puzzle.id) {
-      // 收尾仍显示染色
-      renderBoardOnly(currentColorGrid())
-      const result = currentResult()
-      if (result?.solved) setStatus('逻辑解题完成，盘面已解出。', 'ok')
-      else setStatus(`回放完毕（${plan.frames.length} 帧，染色已叠加）。`, 'ok')
-    }
-  }
+  finishLogicPlayback(plan.frames.length, token)
 }
 
 function stopLogic() {
@@ -1117,6 +1164,7 @@ function stopLogic() {
   setButtonsDisabled(false)
   updateLogicButton()
   hideLogicProgress()
+  updateLogicPauseButton()
   logicFrames = []
   logicBase = null
   logicFrame = 0
