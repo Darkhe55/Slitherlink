@@ -463,6 +463,42 @@ export function planLogicSolve(
             forcePair(outer, c.px, c.py, '对边→外边')
           }
         }
+
+        // 规则3B：某个角的外边全为叉（或该角在棋盘角落，外边即 pad 叉），
+        // 则该角的两条内边只能同进同出；又因数字 2 总共 2 条边，
+        // 对角顶点的两条内边也与之互补，必同进同出。
+        for (const c of corners) {
+          const vi = vertexMaskIndex(w, c.px, c.py)
+          if (masks.vertices[vi]) continue
+          const ve = vertexEdges(w, c.px, c.py)
+          const all: Side[] = [
+            { axis: 'h', index: ve.west },
+            { axis: 'h', index: ve.east },
+            { axis: 'v', index: ve.north },
+            { axis: 'v', index: ve.south },
+          ]
+          const atKeys = new Set(c.at.map((s) => `${s.axis}:${s.index}`))
+          const outer = all.filter((s) => !atKeys.has(`${s.axis}:${s.index}`))
+          if (outer.length !== 2) continue
+          if (!outer.every((s) => edgeValue(work, s.axis, s.index) === ES.Forbidden)) continue
+
+          const a = edgeValue(work, c.far[0]!.axis, c.far[0]!.index)
+          const b = edgeValue(work, c.far[1]!.axis, c.far[1]!.index)
+          const acc: LogicChange[] = []
+          if (a === ES.On && b === ES.Unknown) {
+            trySet(c.far[1]!.axis, c.far[1]!.index, ES.On, acc)
+          } else if (b === ES.On && a === ES.Unknown) {
+            trySet(c.far[0]!.axis, c.far[0]!.index, ES.On, acc)
+          } else if (a === ES.Forbidden && b === ES.Unknown) {
+            trySet(c.far[1]!.axis, c.far[1]!.index, ES.Forbidden, acc)
+          } else if (b === ES.Forbidden && a === ES.Unknown) {
+            trySet(c.far[0]!.axis, c.far[0]!.index, ES.Forbidden, acc)
+          }
+          if (acc.length) {
+            flush(3, `规则3B：数字2角(${c.px},${c.py}) 外边全叉 → 对角内边同进同出`, acc)
+          }
+        }
+
       }
     }
   }
