@@ -796,11 +796,7 @@ function toggleLogicPause() {
   }
   logicPaused = !logicPaused
   updateLogicPauseButton()
-  if (logicPaused) {
-    setStatus(`回放已暂停 [${logicFrame}/${logicTotal}] · 可拖动进度或点“继续”恢复`, 'solving')
-  } else {
-    setStatus(`回放继续 [${logicFrame}/${logicTotal}]…`, 'solving')
-  }
+  // 暂停/继续不覆盖当前回放理由；状态栏保留最后一帧的规则说明。
 }
 
 function finishLogicPlayback(total: number, token: number): void {
@@ -997,8 +993,6 @@ function applyLogicSeek(): void {
   logicSeekTarget = null
   if (!session || session.puzzle.id !== logicPuzzleId) return
   rebuildLogicState(target)
-  const tone = target === logicTotal ? 'ok' : 'solving'
-  setStatus(`回放已定位到第 ${logicFrame}/${logicTotal} 步。`, tone)
 }
 
 /** 进度条/输入框跳转；回放中由 playLogicPlan 在下一帧应用，暂停或结束后立即应用。 */
@@ -1013,12 +1007,16 @@ function seekLogicFrame(n: number): void {
   // 立即重建到目标帧，保证“跳转后马上暂停”也能停在该位置
   applyLogicSeek()
   updateLogicPauseButton()
-  if (logicPlaying && !logicPaused) {
-    setStatus(`已定位到第 ${target}/${logicTotal} 步，继续回放…`, 'solving')
-  } else if (logicPaused) {
-    setStatus(`回放已暂停在第 ${target}/${logicTotal} 步。`, 'solving')
+  // 跳到某帧时显示该帧自身的回放理由；停在 0 时只显示起点。
+  if (target > 0) {
+    const frame = logicFrames[target - 1]!
+    const tone = frame.change.to === ES.On ? '落环' : '排除'
+    setStatus(
+      `回放 [${target}/${logicTotal}] 规则${frame.rule} ${tone}×${frame.streak} · ${frame.label}`,
+      'solving',
+    )
   } else {
-    setStatus(`回放已定位到第 ${target}/${logicTotal} 步。`, 'ok')
+    setStatus(`回放起点 [0/${logicTotal}]`, 'solving')
   }
 }
 
